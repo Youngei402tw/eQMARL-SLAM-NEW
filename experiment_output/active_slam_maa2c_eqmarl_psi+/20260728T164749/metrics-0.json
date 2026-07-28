@@ -1,0 +1,1 @@
+{"reward": [[1.6172924041748047, 1.6172924041748047]], "metrics": {"coverage": [0.27713625866050806], "occupancy_iou": [0.6071428571428571], "pose_rmse": [0.3391833007335663], "collisions": [0.0], "path_length": [2.0], "redundant_coverage": [0.0], "pose_uncertainty": [0.34317296743392944], "success": [0.0]}}
