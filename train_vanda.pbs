@@ -1,0 +1,104 @@
+#!/bin/bash
+#PBS -N eqmarl-slam
+#PBS -l select=1:ncpus=8:mem=32gb:ngpus=1
+#PBS -l walltime=64:00:00
+#PBS -j oe
+#PBS -o eqmarl-slam.o${PBS_JOBID}
+
+# =============================================================================
+# Active-SLAM training for eQMARL on Vanda
+#
+# Fast iteration (default): qsub train_vanda.pbs
+# Full one-framework jobs:  qsub -J 0-3 -v SLAM_MODE=full train_vanda.pbs
+# Monitor: qstat -u $USER       Cancel: qdel <PBS_JOBID>
+# =============================================================================
+
+set -euo pipefail
+
+cd "$PBS_O_WORKDIR"
+echo "Working directory: $(pwd)"
+echo "Job ID: $PBS_JOBID"
+echo "Node: $(hostname)"
+echo "Start time: $(date)"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+SLAM_MODE="${SLAM_MODE:-fast}"
+SLAM_N_SEEDS="${SLAM_N_SEEDS:-1}"
+frameworks=(eqmarl_psi+ qfctde fctde sctde)
+
+if [[ "$SLAM_MODE" != "fast" && "$SLAM_MODE" != "full" ]]; then
+    echo "SLAM_MODE must be fast or full, got: $SLAM_MODE" >&2
+    exit 2
+fi
+if [[ "$SLAM_MODE" == "fast" ]]; then
+    SLAM_N_EPISODES="${SLAM_N_EPISODES:-50}"
+    SLAM_MAX_STEPS="${SLAM_MAX_STEPS:-50}"
+else
+    SLAM_N_EPISODES="${SLAM_N_EPISODES:-2000}"
+    SLAM_MAX_STEPS="${SLAM_MAX_STEPS:-250}"
+fi
+
+if [[ -n "${PBS_ARRAY_INDEX:-}" ]]; then
+    framework="${frameworks[$PBS_ARRAY_INDEX]:-}"
+    if [[ -z "$framework" ]]; then
+        echo "PBS_ARRAY_INDEX must be 0 through 3." >&2
+        exit 2
+    fi
+    selected_frameworks=("$framework")
+else
+    selected_frameworks=("${frameworks[@]}")
+fi
+
+echo "Mode: $SLAM_MODE"
+echo "Rounds: $SLAM_N_SEEDS | Episodes: $SLAM_N_EPISODES | Steps: $SLAM_MAX_STEPS"
+echo "Frameworks: ${selected_frameworks[*]}"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Activate Conda environment
+# ---------------------------------------------------------------------------
+module load Miniconda3
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate eQMARL_SLAM
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+echo "Conda env: $CONDA_DEFAULT_ENV"
+echo "Python: $(python --version)"
+python -c "import cirq, gymnasium, tensorflow_quantum"
+echo ""
+
+# ---------------------------------------------------------------------------
+# GPU information
+# ---------------------------------------------------------------------------
+echo "--- GPU Info ---"
+nvidia-smi
+echo ""
+
+# ---------------------------------------------------------------------------
+# Run active-SLAM training
+# ---------------------------------------------------------------------------
+for framework in "${selected_frameworks[@]}"; do
+    config="experiments/active_slam_maa2c_${framework}.yml"
+    args=("$config" -r "$SLAM_N_SEEDS" --n-episodes "$SLAM_N_EPISODES"
+        --max-steps-per-episode "$SLAM_MAX_STEPS")
+    if [[ "$SLAM_MODE" == "fast" ]]; then
+        args+=(--fast)
+    fi
+    echo "==========================================="
+    echo "Starting $framework with $config"
+    echo "==========================================="
+    python scripts/experiment_runner.py "${args[@]}" 2>&1 | tee "training-${framework}-${PBS_JOBID}.log"
+done
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+echo ""
+echo "==========================================="
+echo "Training complete!"
+echo "End time: $(date)"
+echo "Results saved under: experiment_output/active_slam_maa2c_*/"
+echo "==========================================="

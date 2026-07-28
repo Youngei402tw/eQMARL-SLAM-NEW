@@ -131,6 +131,11 @@ beams, 7x7 belief patches, two quantum layers, and narrower networks. Pass
 `[rounds] [episodes] [max_steps]` to override its training budget. Fast runs
 must not be mixed with the full-size results in a final comparison.
 
+For PBS clusters using the Vanda-style module environment, submit the included
+[`train_vanda.pbs`](./train_vanda.pbs) job. It defaults to the fast preset.
+Use `qsub -J 0-3 -v SLAM_MODE=full train_vanda.pbs` to run one full-size
+framework per GPU array task.
+
 Seeded non-learning baselines and the test suite can be run with:
 
 ```bash
