@@ -44,9 +44,9 @@ class CallbackList(Callback):
     Allows invoking functions from a list of callback objects using a single call to the entire list.
     """
     
-    def __init__(self, callbacks: list[Callback] = []):
+    def __init__(self, callbacks: list[Callback] = None):
         super().__init__()
-        self.callbacks = callbacks
+        self.callbacks = callbacks or []
         
     def __getitem__(self, item):
         return self.callbacks[item]

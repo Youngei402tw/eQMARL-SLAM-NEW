@@ -1,9 +1,11 @@
 import sys
-sys.path.append('../') # Use parent dir.
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 
 import eqmarl
 import tensorflow.keras as keras
-from pathlib import Path
 from datetime import datetime
 import yaml
 from importlib import import_module
@@ -11,6 +13,9 @@ import gymnasium as gym
 from typing import Union
 import argparse
 import copy
+import random
+import numpy as np
+import tensorflow as tf
 
 
 def load_obj_from_dotpath(path: str):
@@ -59,6 +64,13 @@ def load_experiment(config: dict, flag_print_model_summary: bool = False) -> dic
     
     config_exp = config['experiment']
     roots = config_exp['roots']
+
+    # Seed before constructing models so weight initialization is reproducible.
+    seed = config_exp['algorithm']['init_params'].get('seed', None)
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        tf.random.set_seed(seed)
     
     # Load the algorithm.
     config_algo = config['experiment']['algorithm']
@@ -111,6 +123,31 @@ def load_experiment(config: dict, flag_print_model_summary: bool = False) -> dic
     )
 
 
+def set_round_seed(config: dict, round_index: int, stride: int = 100000):
+    """Give each training round a reproducible, non-overlapping seed range."""
+    params = config['experiment']['algorithm']['init_params']
+    if 'seed' not in params:
+        return
+    round_seed = int(params['seed']) + int(round_index) * int(stride)
+    params['seed'] = round_seed
+    env_params = params.get('env', {}).get('params', {})
+    if 'seed' in env_params:
+        env_params['seed'] = round_seed
+
+
+def apply_train_overrides(config: dict, n_episodes=None, max_steps_per_episode=None):
+    """Apply validated command-line overrides to an experiment definition."""
+    train = config['experiment']['train']
+    if n_episodes is not None:
+        if n_episodes <= 0:
+            raise ValueError("--n-episodes must be positive")
+        train['n_episodes'] = n_episodes
+    if max_steps_per_episode is not None:
+        if max_steps_per_episode <= 0:
+            raise ValueError("--max-steps-per-episode must be positive")
+        train['max_steps_per_episode'] = max_steps_per_episode
+
+
 
 
 
@@ -137,6 +174,7 @@ def main(
     for r in range(n_train_rounds):
 
         config_session = copy.deepcopy(config)
+        set_round_seed(config_session, r)
         exp = load_experiment(config_session, flag_print_model_summary=flag_print_model_summary)
         algo: eqmarl.Algorithm = exp['algorithm']
         train_params = exp['train']
@@ -211,6 +249,16 @@ def get_opts() -> argparse.Namespace:
         default=False,
         help='Dry run of experiment, only loads experiment files and preps for experiment to be run but does not actually train anything; useful for testing.',
         )
+    parser.add_argument('--n-episodes',
+        type=int,
+        default=None,
+        help='Override the number of training episodes from the experiment configuration.',
+        )
+    parser.add_argument('--max-steps-per-episode',
+        type=int,
+        default=None,
+        help='Override the maximum episode length from the experiment configuration.',
+        )
     
     
     args = parser.parse_args()
@@ -228,6 +276,12 @@ if __name__ == '__main__':
     assert config_path.exists(), f"experiment config file does not exist: {opts.config}"
     with open(config_path) as f:
         config = yaml.load(f, Loader=eqmarl.yaml.ConfigLoader)
+
+    apply_train_overrides(
+        config,
+        n_episodes=opts.n_episodes,
+        max_steps_per_episode=opts.max_steps_per_episode,
+    )
 
     # Run the experiment.
     main(

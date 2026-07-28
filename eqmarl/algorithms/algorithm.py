@@ -35,6 +35,20 @@ class VectorInteraction:
     dones: list[bool]
 
 
+@dataclass
+class MultiAgentInteraction:
+    """One transition from a cooperative multi-agent environment."""
+
+    actor_observations: tf.Tensor
+    critic_state: tf.Tensor
+    actions: list[int]
+    rewards: tf.Tensor
+    next_actor_observations: tf.Tensor
+    next_critic_state: tf.Tensor
+    terminated: bool
+    truncated: bool
+
+
 class Algorithm:
     """Reinforcement learning algorithm base class for use with `gym.Env` environments."""
 
@@ -151,14 +165,15 @@ class Algorithm:
     def train(self,
         n_episodes: int, # Number of episodes.
         max_steps_per_episode: int = 10000,
-        callbacks: list[Callback] = [],
-        tqdm_kwargs: dict = {},
+        callbacks: list[Callback] = None,
+        tqdm_kwargs: dict = None,
         ) -> tuple[np.ndarray, dict[str, Any]]:
         
         print(f"Training for {n_episodes} episodes, press 'Ctrl+C' to terminate early")
         
         # Convert callbacks to list subclass.
-        callbacks: CallbackList = CallbackList(callbacks)
+        callbacks: CallbackList = CallbackList(callbacks or [])
+        tqdm_kwargs = tqdm_kwargs or {}
         
         # Set algorithm for all callbacks.
         callbacks.algorithm = self

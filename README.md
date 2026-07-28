@@ -83,6 +83,67 @@ The experiment configuration for each of the frameworks discussed in the paper i
 
 The full list of experiments is as follows:
 
+### Active multi-robot SLAM
+
+The repository also includes a Gym-native two-robot active-SLAM research
+environment. A conventional scan-matching occupancy-grid backend estimates
+poses and maps; MAA2C only learns the robots' exploration actions. The four
+fixed actions are forward, turn left, turn right, and wait.
+
+The SLAM comparison configurations are:
+
+| Configuration | Description |
+| --- | --- |
+| `active_slam_maa2c_eqmarl_psi+.yml` | Eight-qubit partite critic with Psi+ input entanglement. |
+| `active_slam_maa2c_qfctde.yml` | Centralized eight-qubit critic. |
+| `active_slam_maa2c_fctde.yml` | Classical actor and fully centralized critic with early feature mixing. |
+| `active_slam_maa2c_sctde.yml` | Classical actor and separated per-robot critic branches with late aggregation. |
+
+`active_slam_maa2c_eqmarl_noentanglement.yml` is provided separately as an
+eQMARL ablation; it is not part of the four-framework comparison.
+
+TensorFlow Quantum requires the legacy Python 3.9 environment specified by
+this project. Build the reproducible container and run a configuration with:
+
+```bash
+docker build -f Dockerfile.slam -t eqmarl-slam .
+docker run --rm -it -v "$PWD:/workspace/eqmarl" eqmarl-slam
+python scripts/experiment_runner.py experiments/active_slam_maa2c_eqmarl_psi+.yml
+bash scripts/run_active_slam.sh 10
+```
+
+The launcher automatically uses the `eQMARL_SLAM` Conda environment when the
+active interpreter is incompatible. For a bounded end-to-end smoke run, pass
+rounds, episodes, and maximum steps respectively:
+
+```bash
+bash scripts/run_active_slam.sh 1 1 3
+```
+
+Seeded non-learning baselines and the test suite can be run with:
+
+```bash
+python scripts/evaluate_active_slam.py --policy random --episodes 50
+python scripts/evaluate_active_slam.py --policy frontier --episodes 50
+python scripts/evaluate_active_slam.py --policy actor --episodes 50 \
+  --config experiments/active_slam_maa2c_eqmarl_psi+.yml \
+  --weights path/to/actor.weights.h5
+pytest -q
+```
+
+Open the companion notebook after training to compare learning curves and
+inspect a MiniGrid-style occupancy-map rollout:
+
+```bash
+jupyter notebook experiments/active_slam_visualization.ipynb
+```
+
+Each run records the team reward used for learning plus `coverage`, occupancy
+map `occupancy_iou`, `pose_rmse`, collision count, path length, redundant
+coverage, pose uncertainty, and a terminal `success` indicator. The notebook
+plots these across frameworks and shows ground truth alongside the fused map,
+robot trajectories, estimated poses, and exploration frontiers.
+
 Experiment YAML File | Environment | Description
 --- | --- | --- 
 [`coingame_maa2c_mdp_eqmarl_noentanglement.yml`](./experiments/coingame_maa2c_mdp_eqmarl_noentanglement.yml) | $\texttt{CoinGame-2}$ | MDP experiment using $\texttt{eQMARL}$ with $\texttt{None}$ entanglement and $L=5$ VQC layers.

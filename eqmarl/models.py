@@ -1,10 +1,226 @@
 import tensorflow as tf
 import tensorflow.keras as keras
 import functools as ft
+import cirq
+import numpy as np
 
 from .layers import *
 from .tools import *
 from .observables import *
+
+
+def _validate_active_slam_model_dimensions(
+    observation_dim: int,
+    n_actions: int,
+    d_qubits: int,
+    n_agents: int = None,
+):
+    if observation_dim <= 0:
+        raise ValueError("observation_dim must be positive")
+    if n_actions <= 1:
+        raise ValueError("n_actions must be at least two")
+    if d_qubits < n_actions:
+        raise ValueError("d_qubits must be at least n_actions so each action has an observable")
+    if n_agents is not None and n_agents <= 1:
+        raise ValueError("joint critics require at least two agents")
+
+
+def generate_model_active_slam_actor_quantum(
+    observation_dim: int,
+    n_actions: int = 4,
+    d_qubits: int = 4,
+    n_layers: int = 5,
+    encoder_units: list[int] = None,
+    squash_activation: str = "arctan",
+    beta: float = 1.0,
+    trainable_w_enc: bool = False,
+    name: str = "actor-quantum-shared",
+) -> keras.Model:
+    """Shared active-SLAM actor with a classical encoder and quantum head."""
+    _validate_active_slam_model_dimensions(observation_dim, n_actions, d_qubits)
+    encoder_units = encoder_units or [64]
+    qubits = cirq.LineQubit.range(d_qubits)
+    observables = [cirq.Z(qubit) for qubit in qubits[:n_actions]]
+    quantum_layer = HybridVariationalEncodingPQC(
+        qubits=qubits,
+        d_qubits=d_qubits,
+        n_layers=n_layers,
+        observables=observables,
+        squash_activation=squash_activation,
+        encoding_layer_cls=ParameterizedRotationLayer_RxRyRz,
+        trainable_w_enc=trainable_w_enc,
+    )
+    layers = [keras.Input(shape=(observation_dim,), dtype=tf.float32)]
+    layers.extend(keras.layers.Dense(units, activation="relu") for units in encoder_units)
+    layers.extend(
+        [
+            keras.layers.Dense(d_qubits * 3, activation="linear"),
+            keras.layers.Reshape((d_qubits, 3)),
+            quantum_layer,
+            RescaleWeighted(n_actions),
+            keras.layers.Lambda(lambda values: values * beta),
+            keras.layers.Softmax(name="policy"),
+        ]
+    )
+    return keras.Sequential(layers, name=name)
+
+
+def generate_model_active_slam_critic_quantum_partite(
+    observation_dim: int,
+    n_agents: int = 2,
+    n_actions: int = 4,
+    d_qubits: int = 4,
+    n_layers: int = 5,
+    encoder_units: list[int] = None,
+    squash_activation: str = "arctan",
+    beta: float = 1.0,
+    trainable_w_enc: bool = False,
+    input_entanglement: bool = True,
+    input_entanglement_type: str = "psi+",
+    name: str = "critic-quantum-partite",
+) -> keras.Model:
+    """Entangled partitioned critic used by the active-SLAM eQMARL model."""
+    _validate_active_slam_model_dimensions(observation_dim, n_actions, d_qubits, n_agents)
+    encoder_units = encoder_units or [64]
+    qubits = cirq.LineQubit.range(n_agents * d_qubits)
+    observable = [ft.reduce(lambda left, right: left * right, [cirq.Z(q) for q in qubits])]
+    quantum_layer = HybridPartiteVariationalEncodingPQC(
+        qubits=qubits,
+        n_parts=n_agents,
+        d_qubits=d_qubits,
+        n_layers=n_layers,
+        observables=observable,
+        squash_activation=squash_activation,
+        encoding_layer_cls=ParameterizedRotationLayer_RxRyRz,
+        trainable_w_enc=trainable_w_enc,
+        input_entanglement=input_entanglement,
+        input_entanglement_type=input_entanglement_type,
+    )
+    encoder_layers = [keras.layers.Dense(units, activation="relu") for units in encoder_units]
+    encoder_layers.append(keras.layers.Dense(d_qubits * 3, activation="linear"))
+    encoder = keras.Sequential(encoder_layers, name="shared-belief-encoder")
+    return keras.Sequential(
+        [
+            keras.Input(shape=(n_agents, observation_dim), dtype=tf.float32),
+            keras.layers.TimeDistributed(encoder),
+            keras.layers.Reshape((n_agents, d_qubits, 3)),
+            quantum_layer,
+            RescaleWeighted(1),
+            keras.layers.Lambda(lambda values: values * beta, name="value"),
+        ],
+        name=name,
+    )
+
+
+def generate_model_active_slam_critic_quantum_central(
+    observation_dim: int,
+    n_agents: int = 2,
+    n_actions: int = 4,
+    d_qubits: int = 4,
+    n_layers: int = 5,
+    encoder_units: list[int] = None,
+    squash_activation: str = "arctan",
+    beta: float = 1.0,
+    trainable_w_enc: bool = False,
+    name: str = "critic-quantum-central",
+) -> keras.Model:
+    """Centralized quantum critic for the qfCTDE comparison."""
+    _validate_active_slam_model_dimensions(observation_dim, n_actions, d_qubits, n_agents)
+    encoder_units = encoder_units or [64]
+    total_qubits = n_agents * d_qubits
+    qubits = cirq.LineQubit.range(total_qubits)
+    observable = [ft.reduce(lambda left, right: left * right, [cirq.Z(q) for q in qubits])]
+    quantum_layer = HybridVariationalEncodingPQC(
+        qubits=qubits,
+        d_qubits=total_qubits,
+        n_layers=n_layers,
+        observables=observable,
+        squash_activation=squash_activation,
+        encoding_layer_cls=ParameterizedRotationLayer_RxRyRz,
+        trainable_w_enc=trainable_w_enc,
+    )
+    encoder_layers = [keras.layers.Dense(units, activation="relu") for units in encoder_units]
+    encoder_layers.append(keras.layers.Dense(d_qubits * 3, activation="linear"))
+    encoder = keras.Sequential(encoder_layers, name="shared-belief-encoder")
+    return keras.Sequential(
+        [
+            keras.Input(shape=(n_agents, observation_dim), dtype=tf.float32),
+            keras.layers.TimeDistributed(encoder),
+            keras.layers.Reshape((total_qubits, 3)),
+            quantum_layer,
+            RescaleWeighted(1),
+            keras.layers.Lambda(lambda values: values * beta, name="value"),
+        ],
+        name=name,
+    )
+
+
+def generate_model_active_slam_actor_classical(
+    observation_dim: int,
+    n_actions: int = 4,
+    units: list[int] = None,
+    name: str = "actor-classical-shared",
+) -> keras.Model:
+    _validate_active_slam_model_dimensions(observation_dim, n_actions, n_actions)
+    # 65 units approximately match the default hybrid actor's parameter count.
+    units = units or [65]
+    layers = [keras.Input(shape=(observation_dim,), dtype=tf.float32)]
+    layers.extend(keras.layers.Dense(size, activation="relu") for size in units)
+    layers.append(keras.layers.Dense(n_actions, activation="softmax", name="policy"))
+    return keras.Sequential(layers, name=name)
+
+
+def generate_model_active_slam_critic_fctde(
+    observation_dim: int,
+    n_agents: int = 2,
+    units: list[int] = None,
+    name: str = "critic-classical-fctde",
+) -> keras.Model:
+    """Fully centralized critic that mixes agent features from its first layer."""
+    _validate_active_slam_model_dimensions(observation_dim, 4, 4, n_agents)
+    # 33 units approximately match the default two-partition hybrid critic.
+    units = units or [33]
+    layers = [
+        keras.Input(shape=(n_agents, observation_dim), dtype=tf.float32),
+        keras.layers.Flatten(),
+    ]
+    layers.extend(keras.layers.Dense(size, activation="relu") for size in units)
+    layers.append(keras.layers.Dense(1, name="value"))
+    return keras.Sequential(layers, name=name)
+
+
+def generate_model_active_slam_critic_sctde(
+    observation_dim: int,
+    n_agents: int = 2,
+    units: list[int] = None,
+    name: str = "critic-classical-sctde",
+) -> keras.Model:
+    """Separated critic with independent agent branches and late aggregation."""
+    _validate_active_slam_model_dimensions(observation_dim, 4, 4, n_agents)
+    # Two 33-unit local branches approximately match the hybrid critic.
+    units = units or [33]
+    layers = [keras.Input(shape=(n_agents, observation_dim), dtype=tf.float32)]
+    layers.extend(
+        keras.layers.LocallyConnected1D(size, kernel_size=1, activation="relu")
+        for size in units
+    )
+    layers.extend([keras.layers.Flatten(), keras.layers.Dense(1, name="value")])
+    return keras.Sequential(layers, name=name)
+
+
+def generate_model_active_slam_critic_classical(
+    observation_dim: int,
+    n_agents: int = 2,
+    units: list[int] = None,
+    name: str = "critic-classical-central",
+) -> keras.Model:
+    """Backward-compatible alias for the fully centralized fCTDE critic."""
+    return generate_model_active_slam_critic_fctde(
+        observation_dim=observation_dim,
+        n_agents=n_agents,
+        units=units,
+        name=name,
+    )
 
 
 # MARK: CoinGame2 models.
@@ -118,7 +334,7 @@ def generate_model_CoinGame2_critic_classical_joint_pomdp_central(keepdims: list
 
 
 def map_CoinGame2_obs_to_encoded_vector(obs: tf.Tensor) -> tf.Tensor:
-    """Reduces last dimension of CoinGame2 observation into single number, where the value is the sum of fractional powers of 2 that represents the column within the game grid.
+    r"""Reduces last dimension of CoinGame2 observation into single number, where the value is the sum of fractional powers of 2 that represents the column within the game grid.
     
     For example, converts an observation of shape (A,B,C) to (A,B) where the last dimension is reduced using the function $\sum_{i=0}^{C-1} obs[...,i] 2^{-i}$.
     """

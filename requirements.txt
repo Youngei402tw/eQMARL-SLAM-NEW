@@ -3,6 +3,7 @@ minigrid
 matplotlib
 numpy
 pandas
+PyYAML
 qutip
 seaborn
 sympy

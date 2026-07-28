@@ -1,209 +1,239 @@
+import random
+from typing import Union
+
+import gymnasium as gym
+import numpy as np
 import tensorflow as tf
 import tensorflow.keras as keras
-from typing import Union
-import numpy as np
-import gymnasium as gym
-from dataclasses import asdict
 
-from .algorithm import VectorAlgorithm, VectorInteraction
+from .algorithm import MultiAgentInteraction, VectorAlgorithm
 
 
 class MAA2C(VectorAlgorithm):
-    """Multi-agent advantage actor-critic (MAA2C) algorithm using a state-value critic `V(s)`.
-    
-    Advantage function estimates Q-value using next-state value `V(s')`.
-    
-    Policy loss includes entropy.
+    """Shared-policy multi-agent advantage actor-critic with a joint critic.
+
+    New environments should be normal ``gym.Env`` instances with a
+    ``MultiDiscrete`` action space. Their observation may either be an array of
+    per-agent observations or a dictionary containing ``local`` and ``critic``
+    arrays. ``gym.vector.VectorEnv`` remains supported for the paper's legacy
+    experiments, where its vector axis represented agents.
     """
 
-    def __init__(self,
-        env: gym.vector.VectorEnv, # Vectorized environment.
-        model_actor: keras.Model, # One shared policy (each agent uses the same policy).
-        model_critic: keras.Model, # One central critic.
+    def __init__(
+        self,
+        env: Union[gym.Env, gym.vector.VectorEnv],
+        model_actor: keras.Model,
+        model_critic: keras.Model,
         optimizer_actor: Union[keras.optimizers.Optimizer, list[keras.optimizers.Optimizer]],
         optimizer_critic: Union[keras.optimizers.Optimizer, list[keras.optimizers.Optimizer]],
-        gamma: float = 1., # Discount factor for returns, =1 means no discounting.
-        alpha: float = 0.001, # Entropy coefficient.
-        episode_metrics_callback = None, # Called at the end of each episode to report metrics.
-        ):
-        super().__init__(env, episode_metrics_callback)
-        assert isinstance(env.action_space, (gym.spaces.MultiDiscrete,)), "only `MultiDiscrete` action spaces are supported"
-        self.models = {
-            model_actor.name: model_actor,
-            model_critic.name: model_critic,
-        }
+        gamma: float = 1.0,
+        alpha: float = 0.001,
+        episode_metrics_callback=None,
+        seed: int = 0,
+        reward_aggregation: str = "sum",
+    ):
+        if isinstance(env, gym.vector.VectorEnv):
+            super().__init__(env, episode_metrics_callback)
+            self.legacy_vector_env = True
+            self.n_agents = env.num_envs
+        elif isinstance(env, gym.Env):
+            if not isinstance(env.action_space, gym.spaces.MultiDiscrete):
+                raise TypeError("MAA2C requires a MultiDiscrete joint action space")
+            self.env = env
+            self.episode_metrics_callback = episode_metrics_callback
+            self.n_agents = len(env.action_space.nvec)
+            self.n_envs = self.n_agents  # Backward-compatible public attribute.
+            self._episode_reward_history = []
+            self._episode_metrics_history = []
+            self._models = {}
+            self.legacy_vector_env = False
+        else:
+            raise TypeError("env must be a gymnasium Env or VectorEnv")
+
+        if not isinstance(env.action_space, gym.spaces.MultiDiscrete):
+            raise TypeError("MAA2C requires a MultiDiscrete joint action space")
+        if len(set(int(n) for n in env.action_space.nvec)) != 1:
+            raise ValueError("the shared actor requires the same action count for every agent")
+
+        self.models = {model_actor.name: model_actor, model_critic.name: model_critic}
         self.model_actor = model_actor
         self.model_critic = model_critic
         self.optimizer_actor = optimizer_actor
         self.optimizer_critic = optimizer_critic
-        self.gamma = gamma
-        self.alpha = alpha
+        self.gamma = float(gamma)
+        self.alpha = float(alpha)
+        self.seed = int(seed)
+        if reward_aggregation not in ("sum", "mean"):
+            raise ValueError("reward_aggregation must be 'sum' or 'mean'")
+        self.reward_aggregation = reward_aggregation
+        self.rng = np.random.default_rng(self.seed)
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        tf.random.set_seed(self.seed)
+        self.last_losses = {}
 
-    def policy(self, states, batched: bool = False) -> tuple[list[int], list[tf.Tensor]]:
-        """Shared policy. Get policy estimation for each agent individually."""
+    @staticmethod
+    def _split_observation(observation):
+        if isinstance(observation, dict):
+            if "local" not in observation:
+                raise KeyError("multi-agent observations require a 'local' entry")
+            local = np.asarray(observation["local"], dtype=np.float32)
+            critic = np.asarray(observation.get("critic", local), dtype=np.float32)
+            return local, critic
+        array = np.asarray(observation, dtype=np.float32)
+        return array, array
+
+    def policy(self, observations, batched: bool = False) -> tuple[list[int], list[tf.Tensor]]:
+        """Sample one action per agent from the shared decentralized policy."""
+        local, _ = self._split_observation(observations)
         joint_action, joint_action_probs = [], []
-        for i, s in enumerate(states):
-            # Convert to tensor.
-            s = tf.convert_to_tensor(s)
-            if not batched: 
-                s = tf.reshape(s, (-1, *s.shape))
-
-            # pi(ai | si)
-            action_probs = self.model_actor(s)
-
-            # Sample action from estimated probability distribution.
-            action = np.random.choice(action_probs.shape[-1], p=np.squeeze(action_probs))
-
+        for observation in local:
+            tensor = tf.convert_to_tensor(observation, dtype=tf.float32)
+            if not batched:
+                tensor = tf.expand_dims(tensor, axis=0)
+            action_probs = self.model_actor(tensor)
+            probabilities = np.asarray(action_probs[0], dtype=np.float64)
+            probabilities = probabilities / probabilities.sum()
+            action = int(self.rng.choice(len(probabilities), p=probabilities))
             joint_action.append(action)
             joint_action_probs.append(action_probs)
-
         return joint_action, joint_action_probs
 
-    def values(self, states, batched: bool = False) -> list[tf.Tensor]:
-        """Get joint value estimate at a given state `V({s0, s1, ...})`."""
-        # Convert to tensor.
-        s = tf.convert_to_tensor(states)
-        if not batched: 
-            s = tf.reshape(s, (-1, *s.shape))
+    def values(self, observations, batched: bool = False) -> tf.Tensor:
+        """Estimate the joint value from the centralized critic state."""
+        _, critic = self._split_observation(observations)
+        tensor = tf.convert_to_tensor(critic, dtype=tf.float32)
+        if not batched:
+            tensor = tf.expand_dims(tensor, axis=0)
+        return self.model_critic(tensor)
 
-        # V({s0, s1, ...})
-        state_values = self.model_critic(s)
+    @staticmethod
+    def _apply_gradients(optimizer, gradients, variables):
+        pairs = [(gradient, variable) for gradient, variable in zip(gradients, variables) if gradient is not None]
+        if isinstance(optimizer, (list, tuple)):
+            if len(optimizer) != len(variables):
+                raise ValueError(
+                    f"received {len(optimizer)} optimizers for {len(variables)} trainable variables"
+                )
+            for item, gradient, variable in zip(optimizer, gradients, variables):
+                if gradient is not None:
+                    item.apply_gradients([(gradient, variable)])
+        elif pairs:
+            optimizer.apply_gradients(pairs)
 
-        return state_values
+    @staticmethod
+    def _td_targets(team_rewards, terminals, gamma, next_values):
+        return tf.stop_gradient(team_rewards + (1.0 - terminals) * gamma * next_values)
 
+    @staticmethod
+    def _actor_objective(policy_loss, entropy, alpha):
+        return policy_loss - alpha * entropy
 
-    def update(self, batch: list[VectorInteraction]):
+    def update(self, batch: list[MultiAgentInteraction]):
+        if not batch:
+            return
 
-        # Convert training batch to dictionary.
-        batch = {k:[asdict(d)[k] for d in batch] for k in asdict(batch[0]).keys()}
-        
-        # Unpack training batch elements.
-        states_batched = np.array(batch['states']) #.squeeze()
-        actions_batched = np.array(batch['actions']) #.squeeze()
-        rewards_batched = np.array(batch['rewards'], dtype='float32') #.squeeze()
-        next_states_batched = np.array(batch['next_states']) #.squeeze()
-        dones_batched = np.array(batch['dones'], dtype='float32') #.squeeze()
-        
-        # Convert training batch elements to tensors.
-        states_batched = tf.convert_to_tensor(states_batched)
-        actions_batched = tf.convert_to_tensor(actions_batched)
-        rewards_batched = tf.convert_to_tensor(rewards_batched)
-        next_states_batched = tf.convert_to_tensor(next_states_batched)
-        dones_batched = tf.convert_to_tensor(dones_batched)
-        
-        # Compute total reward, which is sum of all agent rewards.
-        rewards_batched = tf.reduce_sum(rewards_batched, axis=-1, keepdims=True)
-        
-        # Total `done` signal.
-        dones_batched = tf.cast(tf.reduce_sum(dones_batched, axis=-1, keepdims=True) > 0., 'float32')
-        
-        # Critic loss function, used later.
-        huber_loss = tf.keras.losses.Huber(reduction=keras.losses.Reduction.SUM)
-
-        # Update the critic and actor networks simultaneously.
-        with tf.GradientTape() as tape_critic, tf.GradientTape() as tape_actor:
-            tape_critic.watch(self.model_critic.trainable_variables)
-            tape_actor.watch(self.model_actor.trainable_variables)
-            
-            joint_state_values = self.model_critic(states_batched) # V({s0, s1, ...})
-            
-            joint_next_state_values = self.model_critic(next_states_batched) # V({s0', s1', ...})
-            
-            agents_action_probs = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
-            agents_action_probs_log = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
-            for k in range(self.n_envs):
-                # Get action probabilities for the given states.
-                action_probs = self.model_actor(states_batched[:,k]) # pi(a|s)
-                agents_action_probs = agents_action_probs.write(k, action_probs)
-
-                # Convert batched individual actions back to a joint action.
-                id_action_pairs = np.array([(i,a) for i, a in enumerate(actions_batched[:,k])]) # (n_time_steps, 2,)
-                probs_of_chosen_actions = tf.gather_nd(action_probs, id_action_pairs) # (n_time_steps,)
-                
-                # Compute log probabilities.
-                action_probs_log = tf.math.log(probs_of_chosen_actions) # (n_time_steps,)
-                agents_action_probs_log = agents_action_probs_log.write(k, action_probs_log)
-            agents_action_probs_log = tf.transpose(agents_action_probs_log.stack()) # (n_time_steps, n_agents)
-            agents_action_probs = tf.transpose(agents_action_probs.stack(), [1, 0, 2]) # (n_time_steps, n_agents, n_actions)
-
-            # Compute advantage via Q-value estimation.
-            # Q(s, a) = r(s',a) + gamma * V(s')
-            q_values = rewards_batched + (1. - dones_batched) * self.gamma * joint_next_state_values
-            advantage = q_values - joint_state_values # A(s, a) = Q(s, a) - V(s)
-
-            # Entropy to regularize actor loss.
-            entropy = -tf.reduce_sum(action_probs * tf.math.log(action_probs), axis=-1)
-            entropy = tf.reduce_mean(entropy)
-
-            actor_loss = tf.reduce_mean(-agents_action_probs_log * advantage) + self.alpha * entropy
-            critic_loss = huber_loss(joint_state_values, q_values) # Huber loss of advantage.
-
-        # Compute gradients for the actor network.
-        grads_actor = tape_actor.gradient(actor_loss, self.model_actor.trainable_variables)
-        grads_critic = tape_critic.gradient(critic_loss, self.model_critic.trainable_variables)
-
-        # Update actor network.
-        if isinstance(self.optimizer_actor, (list, tuple)):
-            for i in range(len(self.optimizer_actor)):
-                self.optimizer_actor[i].apply_gradients([(grads_actor[i], self.model_actor.trainable_variables[i])])
+        actor_observations = tf.convert_to_tensor(
+            np.asarray([item.actor_observations for item in batch]), dtype=tf.float32
+        )
+        critic_states = tf.convert_to_tensor(
+            np.asarray([item.critic_state for item in batch]), dtype=tf.float32
+        )
+        actions = tf.convert_to_tensor(
+            np.asarray([item.actions for item in batch]), dtype=tf.int32
+        )
+        rewards = tf.convert_to_tensor(
+            np.asarray([item.rewards for item in batch]), dtype=tf.float32
+        )
+        next_critic_states = tf.convert_to_tensor(
+            np.asarray([item.next_critic_state for item in batch]), dtype=tf.float32
+        )
+        terminals = tf.convert_to_tensor(
+            [[float(item.terminated or item.truncated)] for item in batch], dtype=tf.float32
+        )
+        if self.reward_aggregation == "mean":
+            team_rewards = tf.reduce_mean(rewards, axis=-1, keepdims=True)
         else:
-            self.optimizer_actor.apply_gradients(zip(grads_actor, self.model_actor.trainable_variables))
+            team_rewards = tf.reduce_sum(rewards, axis=-1, keepdims=True)
 
-        # Update critic network.
-        if isinstance(self.optimizer_critic, (list, tuple)):
-            for i in range(len(self.optimizer_critic)):
-                self.optimizer_critic[i].apply_gradients([(grads_critic[i], self.model_critic.trainable_variables[i])])
-        else:
-            self.optimizer_critic.apply_gradients(zip(grads_critic, self.model_critic.trainable_variables))
+        with tf.GradientTape() as critic_tape, tf.GradientTape() as actor_tape:
+            values = self.model_critic(critic_states)
+            next_values = self.model_critic(next_critic_states)
+            targets = self._td_targets(team_rewards, terminals, self.gamma, next_values)
+            advantages = tf.stop_gradient(targets - values)
 
+            all_probs = []
+            all_log_probs = []
+            for agent_index in range(self.n_agents):
+                probabilities = self.model_actor(actor_observations[:, agent_index])
+                probabilities = tf.clip_by_value(probabilities, 1e-7, 1.0)
+                chosen = tf.reduce_sum(
+                    probabilities
+                    * tf.one_hot(actions[:, agent_index], depth=tf.shape(probabilities)[-1]),
+                    axis=-1,
+                )
+                all_probs.append(probabilities)
+                all_log_probs.append(tf.math.log(chosen))
 
-    def run_episode(self, 
-        episode: int,
-        total_steps: int,
-        max_steps_per_episode: int,
-        ) -> tuple[Union[float, np.ndarray], list[VectorInteraction], int]:
-        """Runs a single episode.
-        
-        Returns a tuple of (episode_reward, interaction_history, n_steps).
-        """
-
-        episode_reward = 0.
-        batch = []
-
-        # Reset environment.
-        states, _ = self.env.reset()
-        
-        # Iterate through environment at discrete time steps.
-        for t in range(max_steps_per_episode):
-
-            # Get the joint action.
-            actions, action_probs = self.policy(states)
-
-            # Step through environment using joint action.
-            next_states, rewards, dones, truncated, infos = self.env.step(actions)
-            
-            # Preserve interaction.
-            interaction = VectorInteraction(
-                states=states,
-                actions=actions,
-                action_probs=action_probs,
-                rewards=rewards,
-                next_states=next_states,
-                dones=dones,
+            probabilities = tf.stack(all_probs, axis=1)
+            chosen_log_probs = tf.stack(all_log_probs, axis=1)
+            entropy = -tf.reduce_mean(
+                tf.reduce_sum(probabilities * tf.math.log(probabilities), axis=-1)
             )
-            batch.append(interaction)
-            
-            # Set next state.
-            states = next_states
+            policy_loss = tf.reduce_mean(-chosen_log_probs * advantages)
+            actor_loss = self._actor_objective(policy_loss, entropy, self.alpha)
+            critic_loss = tf.reduce_mean(keras.losses.huber(targets, values))
 
-            # Modify episode reward.
-            episode_reward += rewards
+        actor_gradients = actor_tape.gradient(actor_loss, self.model_actor.trainable_variables)
+        critic_gradients = critic_tape.gradient(critic_loss, self.model_critic.trainable_variables)
+        self._apply_gradients(
+            self.optimizer_actor, actor_gradients, self.model_actor.trainable_variables
+        )
+        self._apply_gradients(
+            self.optimizer_critic, critic_gradients, self.model_critic.trainable_variables
+        )
+        self.last_losses = {
+            "actor": float(actor_loss.numpy()),
+            "critic": float(critic_loss.numpy()),
+            "entropy": float(entropy.numpy()),
+        }
 
-            # Terminate episode.
-            if any(dones) or any(truncated):
+    def _reset_environment(self, episode: int):
+        try:
+            return self.env.reset(seed=self.seed + episode)
+        except TypeError:
+            return self.env.reset()
+
+    def run_episode(self, episode: int, total_steps: int, max_steps_per_episode: int):
+        episode_reward = np.zeros(self.n_agents, dtype=np.float32)
+        batch = []
+        observation, _ = self._reset_environment(episode)
+
+        for step_index in range(max_steps_per_episode):
+            local, critic = self._split_observation(observation)
+            actions, _ = self.policy(observation)
+            next_observation, rewards, terminated, truncated, _ = self.env.step(actions)
+            next_local, next_critic = self._split_observation(next_observation)
+            terminated_flag = bool(np.any(terminated))
+            truncated_flag = bool(np.any(truncated))
+            reward_array = np.asarray(rewards, dtype=np.float32)
+
+            batch.append(
+                MultiAgentInteraction(
+                    actor_observations=local,
+                    critic_state=critic,
+                    actions=actions,
+                    rewards=reward_array,
+                    next_actor_observations=next_local,
+                    next_critic_state=next_critic,
+                    terminated=terminated_flag,
+                    truncated=truncated_flag,
+                )
+            )
+            episode_reward += reward_array
+            observation = next_observation
+            if terminated_flag or truncated_flag:
                 break
-            
-        # Update the model after each episode.
-        self.update(batch)
 
-        return episode_reward, batch, t
+        self.update(batch)
+        return episode_reward, batch, step_index + 1

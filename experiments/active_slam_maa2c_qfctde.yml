@@ -1,0 +1,38 @@
+experiment:
+  roots:
+    root_dir: &root_dir 'experiment_output/active_slam_maa2c_qfctde'
+    session_dir: &session_dir !join [*root_dir, '/', '{datetime_session:%Y%m%dT%H%M%S}']
+  save:
+    metrics_file: &metrics_file !join [*session_dir, '/', 'metrics-{round}.json']
+    model_files: []
+  train:
+    n_episodes: 2000
+    max_steps_per_episode: 250
+    callbacks:
+      - func: eqmarl.AlgorithmResultCheckpoint
+        params: {filepath: *metrics_file, save_freq: 100, verbose: true}
+  algorithm:
+    init_func: eqmarl.algorithms.MAA2C
+    init_params:
+      gamma: 0.99
+      alpha: 0.001
+      seed: 0
+      reward_aggregation: mean
+      episode_metrics_callback: eqmarl.environments.active_slam.episode_metrics_callback
+      env:
+        func: eqmarl.environments.active_slam.active_slam_make
+        params: {map_size: 24, n_agents: 2, n_beams: 36, time_limit: 250, seed: 0}
+      model_actor:
+        init_func: eqmarl.models.generate_model_active_slam_actor_quantum
+        init_params: {observation_dim: 411, n_actions: 4, d_qubits: 4, n_layers: 5, encoder_units: [64], trainable_w_enc: false, name: 'actor-quantum-shared'}
+        build_shape: [null, 411]
+      optimizer_actor:
+        func: tensorflow.keras.optimizers.Adam
+        params: {learning_rate: 0.001}
+      model_critic:
+        init_func: eqmarl.models.generate_model_active_slam_critic_quantum_central
+        init_params: {observation_dim: 411, n_agents: 2, n_actions: 4, d_qubits: 4, n_layers: 5, encoder_units: [64], trainable_w_enc: false, name: 'critic-quantum-central'}
+        build_shape: [null, 2, 411]
+      optimizer_critic:
+        func: tensorflow.keras.optimizers.Adam
+        params: {learning_rate: 0.001}
