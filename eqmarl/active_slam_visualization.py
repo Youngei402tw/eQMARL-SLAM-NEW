@@ -163,7 +163,7 @@ def _draw_frame(axis, frame: dict, history, ground_truth: bool):
         axis.set_title("Ground truth and true poses")
     else:
         probability = 1.0 / (1.0 + np.exp(-frame["log_odds"]))
-        image = np.where(frame["observed"], probability, 0.5)
+        image = np.where(frame["observed"], 1.0 - probability, 0.5)
         axis.imshow(image, cmap="gray", vmin=0, vmax=1, origin="lower")
         frontiers = np.argwhere(frame["frontiers"])
         if len(frontiers):

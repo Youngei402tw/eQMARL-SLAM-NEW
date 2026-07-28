@@ -3,6 +3,7 @@
 import json
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 from eqmarl.active_slam_visualization import (
     discover_metric_files,
@@ -48,4 +49,19 @@ def test_frontier_rollout_can_be_rendered():
     assert frames[-1]["ground_truth"].shape == (16, 16)
     figure = plot_slam_frame(frames[-1], history=frames)
     assert len(figure.axes) == 2
+    plt.close(figure)
+
+
+def test_belief_panel_uses_black_for_occupied_cells():
+    env = MultiAgentSLAMEnv(map_size=16, time_limit=1)
+    frames = rollout(env, FrontierJointPolicy(), seed=5)
+    frame = frames[-1]
+    frame["observed"][:] = True
+    frame["log_odds"][:] = 0.0
+    frame["log_odds"][1, 1] = 8.0
+    frame["log_odds"][1, 2] = -8.0
+    figure = plot_slam_frame(frame)
+    image = figure.axes[1].images[0].get_array()
+    assert image[1, 1] < 0.01
+    assert image[1, 2] > 0.99
     plt.close(figure)
