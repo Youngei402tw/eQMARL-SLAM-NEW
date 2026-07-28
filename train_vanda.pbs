@@ -8,6 +8,7 @@
 # One-framework, one-seed active-SLAM training for eQMARL on Vanda
 #
 # Submit all four separate jobs: bash scripts/submit_vanda_four.sh
+# Override a budget: SLAM_N_EPISODES=1000 bash scripts/submit_vanda_four.sh full
 # Submit one job manually: qsub -v SLAM_FRAMEWORK=fctde train_vanda.pbs
 # Monitor: qstat -u $USER       Cancel: qdel <PBS_JOBID>
 # =============================================================================

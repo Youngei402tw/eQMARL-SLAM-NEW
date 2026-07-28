@@ -134,7 +134,8 @@ must not be mixed with the full-size results in a final comparison.
 For PBS clusters using the Vanda-style module environment, submit the included
 [`train_vanda.pbs`](./train_vanda.pbs) job. Submit four independent one-seed
 jobs with `bash scripts/submit_vanda_four.sh`; pass `full` to use the full
-benchmark rather than the default fast preset.
+benchmark rather than the default fast preset. Forward an explicit budget with
+`SLAM_N_EPISODES=1000 bash scripts/submit_vanda_four.sh full`.
 
 Seeded non-learning baselines and the test suite can be run with:
 

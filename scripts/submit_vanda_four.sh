@@ -10,5 +10,12 @@ if [[ "$mode" != "fast" && "$mode" != "full" ]]; then
 fi
 
 for framework in eqmarl_psi+ qfctde fctde sctde; do
-    qsub -v "SLAM_FRAMEWORK=$framework,SLAM_MODE=$mode" "$repo_root/train_vanda.pbs"
+    variables="SLAM_FRAMEWORK=$framework,SLAM_MODE=$mode"
+    for name in SLAM_N_EPISODES SLAM_MAX_STEPS; do
+        value="${!name-}"
+        if [[ -n "$value" ]]; then
+            variables+=",$name=$value"
+        fi
+    done
+    qsub -v "$variables" "$repo_root/train_vanda.pbs"
 done
