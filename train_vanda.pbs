@@ -3,7 +3,6 @@
 #PBS -l select=1:ncpus=8:mem=32gb:ngpus=1
 #PBS -l walltime=64:00:00
 #PBS -j oe
-#PBS -o eqmarl-slam.o${PBS_JOBID}
 
 # =============================================================================
 # One-framework, one-seed active-SLAM training for eQMARL on Vanda
@@ -62,7 +61,7 @@ export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 echo "Conda env: $CONDA_DEFAULT_ENV"
 echo "Python: $(python --version)"
-python -c "import cirq, gymnasium, tensorflow_quantum"
+python -c "import cirq, eqmarl, gymnasium, tensorflow_quantum; print('eQMARL:', eqmarl.__file__)"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -70,12 +69,17 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "--- GPU Info ---"
 nvidia-smi
+python -c "import tensorflow as tf; assert tf.config.list_physical_devices('GPU'), 'no GPU visible to TensorFlow'"
 echo ""
 
 # ---------------------------------------------------------------------------
 # Run active-SLAM training
 # ---------------------------------------------------------------------------
 config="experiments/active_slam_maa2c_${SLAM_FRAMEWORK}.yml"
+if [[ ! -f "$config" ]]; then
+    echo "Experiment config not found: $config" >&2
+    exit 2
+fi
 args=("$config" -r 1 --n-episodes "$SLAM_N_EPISODES"
     --max-steps-per-episode "$SLAM_MAX_STEPS")
 if [[ "$SLAM_MODE" == "fast" ]]; then
