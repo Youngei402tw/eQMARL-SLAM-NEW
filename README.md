@@ -132,9 +132,9 @@ beams, 7x7 belief patches, two quantum layers, and narrower networks. Pass
 must not be mixed with the full-size results in a final comparison.
 
 For PBS clusters using the Vanda-style module environment, submit the included
-[`train_vanda.pbs`](./train_vanda.pbs) job. It defaults to the fast preset.
-Use `qsub -J 0-3 -v SLAM_MODE=full train_vanda.pbs` to run one full-size
-framework per GPU array task.
+[`train_vanda.pbs`](./train_vanda.pbs) job. Submit four independent one-seed
+jobs with `bash scripts/submit_vanda_four.sh`; pass `full` to use the full
+benchmark rather than the default fast preset.
 
 Seeded non-learning baselines and the test suite can be run with:
 

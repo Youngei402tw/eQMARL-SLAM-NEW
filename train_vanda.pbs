@@ -6,10 +6,10 @@
 #PBS -o eqmarl-slam.o${PBS_JOBID}
 
 # =============================================================================
-# Active-SLAM training for eQMARL on Vanda
+# One-framework, one-seed active-SLAM training for eQMARL on Vanda
 #
-# Fast iteration (default): qsub train_vanda.pbs
-# Full one-framework jobs:  qsub -J 0-3 -v SLAM_MODE=full train_vanda.pbs
+# Submit all four separate jobs: bash scripts/submit_vanda_four.sh
+# Submit one job manually: qsub -v SLAM_FRAMEWORK=fctde train_vanda.pbs
 # Monitor: qstat -u $USER       Cancel: qdel <PBS_JOBID>
 # =============================================================================
 
@@ -26,13 +26,19 @@ echo ""
 # Configuration
 # ---------------------------------------------------------------------------
 SLAM_MODE="${SLAM_MODE:-fast}"
-SLAM_N_SEEDS="${SLAM_N_SEEDS:-1}"
-frameworks=(eqmarl_psi+ qfctde fctde sctde)
+SLAM_FRAMEWORK="${SLAM_FRAMEWORK:-}"
 
 if [[ "$SLAM_MODE" != "fast" && "$SLAM_MODE" != "full" ]]; then
     echo "SLAM_MODE must be fast or full, got: $SLAM_MODE" >&2
     exit 2
 fi
+case "$SLAM_FRAMEWORK" in
+    eqmarl_psi+|qfctde|fctde|sctde) ;;
+    *)
+        echo "Set SLAM_FRAMEWORK to eqmarl_psi+, qfctde, fctde, or sctde." >&2
+        exit 2
+        ;;
+esac
 if [[ "$SLAM_MODE" == "fast" ]]; then
     SLAM_N_EPISODES="${SLAM_N_EPISODES:-50}"
     SLAM_MAX_STEPS="${SLAM_MAX_STEPS:-50}"
@@ -41,20 +47,9 @@ else
     SLAM_MAX_STEPS="${SLAM_MAX_STEPS:-250}"
 fi
 
-if [[ -n "${PBS_ARRAY_INDEX:-}" ]]; then
-    framework="${frameworks[$PBS_ARRAY_INDEX]:-}"
-    if [[ -z "$framework" ]]; then
-        echo "PBS_ARRAY_INDEX must be 0 through 3." >&2
-        exit 2
-    fi
-    selected_frameworks=("$framework")
-else
-    selected_frameworks=("${frameworks[@]}")
-fi
-
 echo "Mode: $SLAM_MODE"
-echo "Rounds: $SLAM_N_SEEDS | Episodes: $SLAM_N_EPISODES | Steps: $SLAM_MAX_STEPS"
-echo "Frameworks: ${selected_frameworks[*]}"
+echo "Framework: $SLAM_FRAMEWORK | Seeds: 1"
+echo "Episodes: $SLAM_N_EPISODES | Steps: $SLAM_MAX_STEPS"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -80,18 +75,16 @@ echo ""
 # ---------------------------------------------------------------------------
 # Run active-SLAM training
 # ---------------------------------------------------------------------------
-for framework in "${selected_frameworks[@]}"; do
-    config="experiments/active_slam_maa2c_${framework}.yml"
-    args=("$config" -r "$SLAM_N_SEEDS" --n-episodes "$SLAM_N_EPISODES"
-        --max-steps-per-episode "$SLAM_MAX_STEPS")
-    if [[ "$SLAM_MODE" == "fast" ]]; then
-        args+=(--fast)
-    fi
-    echo "==========================================="
-    echo "Starting $framework with $config"
-    echo "==========================================="
-    python scripts/experiment_runner.py "${args[@]}" 2>&1 | tee "training-${framework}-${PBS_JOBID}.log"
-done
+config="experiments/active_slam_maa2c_${SLAM_FRAMEWORK}.yml"
+args=("$config" -r 1 --n-episodes "$SLAM_N_EPISODES"
+    --max-steps-per-episode "$SLAM_MAX_STEPS")
+if [[ "$SLAM_MODE" == "fast" ]]; then
+    args+=(--fast)
+fi
+echo "==========================================="
+echo "Starting $SLAM_FRAMEWORK with $config"
+echo "==========================================="
+python scripts/experiment_runner.py "${args[@]}" 2>&1 | tee "training-${SLAM_FRAMEWORK}-${PBS_JOBID}.log"
 
 # ---------------------------------------------------------------------------
 # Summary
@@ -100,5 +93,5 @@ echo ""
 echo "==========================================="
 echo "Training complete!"
 echo "End time: $(date)"
-echo "Results saved under: experiment_output/active_slam_maa2c_*/"
+echo "Results saved under: experiment_output/active_slam_maa2c_${SLAM_FRAMEWORK}/"
 echo "==========================================="
