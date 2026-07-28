@@ -120,6 +120,17 @@ rounds, episodes, and maximum steps respectively:
 bash scripts/run_active_slam.sh 1 1 3
 ```
 
+For rapid iteration rather than final reporting, use the smaller fast preset:
+
+```bash
+bash scripts/run_active_slam_fast.sh
+```
+
+It runs one round of 50 episodes with 50 steps each, a 16x16 map, 16 LiDAR
+beams, 7x7 belief patches, two quantum layers, and narrower networks. Pass
+`[rounds] [episodes] [max_steps]` to override its training budget. Fast runs
+must not be mixed with the full-size results in a final comparison.
+
 Seeded non-learning baselines and the test suite can be run with:
 
 ```bash

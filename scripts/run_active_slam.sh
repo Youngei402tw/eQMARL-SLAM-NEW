@@ -4,6 +4,7 @@ set -euo pipefail
 rounds="${1:-10}"
 episodes="${2:-}"
 max_steps="${3:-}"
+mode="${4:-}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
@@ -25,6 +26,13 @@ if [[ -n "$episodes" ]]; then
 fi
 if [[ -n "$max_steps" ]]; then
     overrides+=(--max-steps-per-episode "$max_steps")
+fi
+if [[ -n "$mode" ]]; then
+    if [[ "$mode" != "--fast" ]]; then
+        echo "Fourth argument must be --fast when provided." >&2
+        exit 2
+    fi
+    overrides+=(--fast)
 fi
 
 echo "Using: ${python_command[*]}"

@@ -146,6 +146,35 @@ def apply_train_overrides(config: dict, n_episodes=None, max_steps_per_episode=N
         if max_steps_per_episode <= 0:
             raise ValueError("--max-steps-per-episode must be positive")
         train['max_steps_per_episode'] = max_steps_per_episode
+        env_params = config['experiment']['algorithm']['init_params'].get('env', {}).get('params', {})
+        if 'time_limit' in env_params:
+            env_params['time_limit'] = max_steps_per_episode
+
+
+def apply_fast_preset(config: dict):
+    """Shrink active-SLAM models and environment for rapid iteration only."""
+    experiment = config['experiment']
+    train = experiment['train']
+    params = experiment['algorithm']['init_params']
+    env = params['env']['params']
+    patch_size, n_beams = 7, 16
+    observation_dim = patch_size * patch_size * 3 + n_beams + 12
+    train.update(n_episodes=50, max_steps_per_episode=50)
+    env.update(map_size=16, n_beams=n_beams, patch_size=patch_size, time_limit=50)
+    for key, model_config in params.items():
+        if not key.startswith('model_'):
+            continue
+        init_params = model_config['init_params']
+        init_params['observation_dim'] = observation_dim
+        if 'n_layers' in init_params:
+            init_params['n_layers'] = 2
+            init_params['encoder_units'] = [32]
+        elif 'units' in init_params:
+            init_params['units'] = [32] if key == 'model_actor' else [16]
+        shape = model_config['build_shape']
+        model_config['build_shape'] = [None, observation_dim] if len(shape) == 2 else [
+            None, 2, observation_dim
+        ]
 
 
 
@@ -259,6 +288,10 @@ def get_opts() -> argparse.Namespace:
         default=None,
         help='Override the maximum episode length from the experiment configuration.',
         )
+    parser.add_argument('--fast',
+        action='store_true',
+        help='Use a smaller active-SLAM environment and model for rapid iteration.',
+        )
     
     
     args = parser.parse_args()
@@ -277,6 +310,8 @@ if __name__ == '__main__':
     with open(config_path) as f:
         config = yaml.load(f, Loader=eqmarl.yaml.ConfigLoader)
 
+    if opts.fast:
+        apply_fast_preset(config)
     apply_train_overrides(
         config,
         n_episodes=opts.n_episodes,
