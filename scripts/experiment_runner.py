@@ -168,7 +168,8 @@ def apply_fast_preset(config: dict):
         init_params['observation_dim'] = observation_dim
         if 'n_layers' in init_params:
             init_params['n_layers'] = 2
-            init_params['encoder_units'] = [32]
+            if 'encoder_units' in init_params:
+                init_params['encoder_units'] = [32]
         elif 'units' in init_params:
             init_params['units'] = [32] if key == 'model_actor' else [16]
         shape = model_config['build_shape']

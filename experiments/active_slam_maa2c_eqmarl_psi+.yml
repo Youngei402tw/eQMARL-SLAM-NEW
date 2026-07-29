@@ -6,10 +6,10 @@ experiment:
   save:
     metrics_file: &metrics_file !join [*session_dir, '/', 'metrics-{round}.json']
     model_files:
-      - name: &actor_name 'actor-quantum-shared'
+      - name: &actor_name 'actor-classical-shared'
         filepath: !join [*session_dir, '/', 'actor-{round}.weights.h5']
         save_weights_only: true
-      - name: &critic_name 'critic-quantum-partite'
+      - name: &critic_name 'critic-eqmarl-psi+'
         filepath: !join [*session_dir, '/', 'critic-{round}.weights.h5']
         save_weights_only: true
 
@@ -32,33 +32,31 @@ experiment:
         func: eqmarl.environments.active_slam.active_slam_make
         params: {map_size: 24, n_agents: 2, n_beams: 36, time_limit: 250, seed: 0}
       model_actor:
-        init_func: eqmarl.models.generate_model_active_slam_actor_quantum
+        init_func: eqmarl.active_slam_models.generate_actor_classical
         init_params:
           observation_dim: 411
           n_actions: 4
-          d_qubits: 4
-          n_layers: 5
-          encoder_units: [64]
-          trainable_w_enc: false
+          units: [100]
           name: *actor_name
         build_shape: [null, 411]
       optimizer_actor:
         func: tensorflow.keras.optimizers.Adam
-        params: {learning_rate: 0.001}
+        params: {learning_rate: 0.0001}
       model_critic:
-        init_func: eqmarl.models.generate_model_active_slam_critic_quantum_partite
+        init_func: eqmarl.active_slam_models.generate_critic_eqmarl
         init_params:
           observation_dim: 411
           n_agents: 2
           n_actions: 4
           d_qubits: 4
           n_layers: 5
-          encoder_units: [64]
+          nn_activation: linear
           trainable_w_enc: false
-          input_entanglement: true
           input_entanglement_type: 'psi+'
           name: *critic_name
         build_shape: [null, 2, 411]
       optimizer_critic:
-        func: tensorflow.keras.optimizers.Adam
-        params: {learning_rate: 0.001}
+        - {func: tensorflow.keras.optimizers.Adam, params: {learning_rate: 0.001}}
+        - {func: tensorflow.keras.optimizers.Adam, params: {learning_rate: 0.001}}
+        - {func: tensorflow.keras.optimizers.Adam, params: {learning_rate: 0.01}}
+        - {func: tensorflow.keras.optimizers.Adam, params: {learning_rate: 0.1}}

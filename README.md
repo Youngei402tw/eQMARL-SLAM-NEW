@@ -94,13 +94,16 @@ The SLAM comparison configurations are:
 
 | Configuration | Description |
 | --- | --- |
-| `active_slam_maa2c_eqmarl_psi+.yml` | Eight-qubit partite critic with Psi+ input entanglement. |
+| `active_slam_maa2c_eqmarl_psi+.yml` | Psi+ entangled, partite eight-qubit critic. |
 | `active_slam_maa2c_qfctde.yml` | Centralized eight-qubit critic. |
-| `active_slam_maa2c_fctde.yml` | Classical actor and fully centralized critic with early feature mixing. |
-| `active_slam_maa2c_sctde.yml` | Classical actor and separated per-robot critic branches with late aggregation. |
+| `active_slam_maa2c_fctde.yml` | Fully centralized classical critic with early feature mixing. |
+| `active_slam_maa2c_sctde.yml` | Separated classical critic with late per-robot aggregation. |
 
-`active_slam_maa2c_eqmarl_noentanglement.yml` is provided separately as an
-eQMARL ablation; it is not part of the four-framework comparison.
+The four methods follow the MiniGrid comparison protocol: they share the same
+100-unit classical actor, the quantum critics use per-agent locally connected
+input reduction and MiniGrid's four optimizer learning rates, and the
+classical critics use 100-unit centralized or separated branches. Each
+configuration saves both actor and critic weights for held-out evaluation.
 
 TensorFlow Quantum requires the legacy Python 3.9 environment specified by
 this project. Build the reproducible container and run a configuration with:

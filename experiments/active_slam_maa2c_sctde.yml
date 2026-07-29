@@ -4,7 +4,9 @@ experiment:
     session_dir: &session_dir !join [*root_dir, '/', '{datetime_session:%Y%m%dT%H%M%S}']
   save:
     metrics_file: &metrics_file !join [*session_dir, '/', 'metrics-{round}.json']
-    model_files: []
+    model_files:
+      - {name: &actor_name 'actor-classical-shared', filepath: !join [*session_dir, '/', 'actor-{round}.weights.h5'], save_weights_only: true}
+      - {name: &critic_name 'critic-sctde', filepath: !join [*session_dir, '/', 'critic-{round}.weights.h5'], save_weights_only: true}
   train:
     n_episodes: 2000
     max_steps_per_episode: 250
@@ -23,16 +25,16 @@ experiment:
         func: eqmarl.environments.active_slam.active_slam_make
         params: {map_size: 24, n_agents: 2, n_beams: 36, time_limit: 250, seed: 0}
       model_actor:
-        init_func: eqmarl.models.generate_model_active_slam_actor_classical
-        init_params: {observation_dim: 411, n_actions: 4, units: [65], name: 'actor-classical-shared'}
+        init_func: eqmarl.active_slam_models.generate_actor_classical
+        init_params: {observation_dim: 411, n_actions: 4, units: [100], name: *actor_name}
         build_shape: [null, 411]
       optimizer_actor:
         func: tensorflow.keras.optimizers.Adam
-        params: {learning_rate: 0.001}
+        params: {learning_rate: 0.0001}
       model_critic:
-        init_func: eqmarl.models.generate_model_active_slam_critic_sctde
-        init_params: {observation_dim: 411, n_agents: 2, units: [33], name: 'critic-classical-sctde'}
+        init_func: eqmarl.active_slam_models.generate_critic_sctde
+        init_params: {observation_dim: 411, n_agents: 2, n_actions: 4, units: [100], name: *critic_name}
         build_shape: [null, 2, 411]
       optimizer_critic:
         func: tensorflow.keras.optimizers.Adam
-        params: {learning_rate: 0.001}
+        params: {learning_rate: 0.0001}

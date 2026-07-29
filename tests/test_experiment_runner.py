@@ -1,4 +1,8 @@
 import pytest
+from pathlib import Path
+
+import eqmarl
+import yaml
 
 from scripts.experiment_runner import apply_fast_preset, apply_train_overrides, set_round_seed
 
@@ -51,3 +55,28 @@ def test_fast_preset_reduces_active_slam_dimensions_and_budget():
     assert params["model_actor"]["init_params"]["n_layers"] == 2
     assert params["model_actor"]["build_shape"] == [None, 175]
     assert params["model_critic"]["init_params"]["units"] == [16]
+
+
+def test_active_slam_configs_follow_four_method_minigrid_protocol():
+    experiment_dir = Path(__file__).parents[1] / "experiments"
+    paths = sorted(experiment_dir.glob("active_slam_maa2c_*.yml"))
+    assert [path.stem.removeprefix("active_slam_maa2c_") for path in paths] == [
+        "eqmarl_psi+", "fctde", "qfctde", "sctde"
+    ]
+    for path in paths:
+        config = yaml.load(path.read_text(), Loader=eqmarl.yaml.ConfigLoader)
+        experiment = config["experiment"]
+        params = experiment["algorithm"]["init_params"]
+        actor = params["model_actor"]
+        assert actor["init_func"] == "eqmarl.active_slam_models.generate_actor_classical"
+        assert actor["init_params"]["units"] == [100]
+        assert params["optimizer_actor"]["params"]["learning_rate"] == 0.0001
+        assert any(item["name"] == actor["init_params"]["name"] for item in experiment["save"]["model_files"])
+        framework = path.stem.removeprefix("active_slam_maa2c_")
+        critic_optimizer = params["optimizer_critic"]
+        if framework in {"eqmarl_psi+", "qfctde"}:
+            assert [item["params"]["learning_rate"] for item in critic_optimizer] == [
+                0.001, 0.001, 0.01, 0.1
+            ]
+        else:
+            assert critic_optimizer["params"]["learning_rate"] == 0.0001
