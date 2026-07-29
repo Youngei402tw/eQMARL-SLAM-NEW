@@ -4,6 +4,11 @@
 # Custom files and folders to ignore.
 output/
 
+# Active-SLAM training artifacts are machine- and run-specific.
+eqmarl-slam.o*
+training-*.log
+experiment_output/active_slam_*/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
