@@ -27,7 +27,7 @@ def _validate(observation_dim: int, n_agents: int, n_actions: int):
 
 def generate_actor_classical(
     observation_dim: int,
-    n_actions: int = 4,
+    n_actions: int = 3,
     units: list[int] | None = None,
     activation: str = "relu",
     name: str = "active-slam-actor",
@@ -58,7 +58,7 @@ def _value_readout(observables, beta: float):
 def generate_critic_eqmarl(
     observation_dim: int,
     n_agents: int = 2,
-    n_actions: int = 4,
+    n_actions: int = 3,
     d_qubits: int = 4,
     n_layers: int = 5,
     beta: float = 1.0,
@@ -101,7 +101,7 @@ def generate_critic_eqmarl(
 def generate_critic_qfctde(
     observation_dim: int,
     n_agents: int = 2,
-    n_actions: int = 4,
+    n_actions: int = 3,
     d_qubits: int = 4,
     n_layers: int = 5,
     beta: float = 1.0,
@@ -141,7 +141,7 @@ def generate_critic_qfctde(
 def generate_critic_fctde(
     observation_dim: int,
     n_agents: int = 2,
-    n_actions: int = 4,
+    n_actions: int = 3,
     units: list[int] | None = None,
     activation: str = "relu",
     name: str = "critic-fctde",
@@ -161,7 +161,7 @@ def generate_critic_fctde(
 def generate_critic_sctde(
     observation_dim: int,
     n_agents: int = 2,
-    n_actions: int = 4,
+    n_actions: int = 3,
     units: list[int] | None = None,
     activation: str = "relu",
     name: str = "critic-sctde",

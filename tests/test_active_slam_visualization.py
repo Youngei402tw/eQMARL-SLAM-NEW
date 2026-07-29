@@ -18,7 +18,10 @@ from eqmarl.policies import FrontierJointPolicy
 
 
 def test_metric_loading_summary_and_plots(tmp_path):
-    output = tmp_path / "active_slam_maa2c_eqmarl_psi+" / "run"
+    legacy = tmp_path / "active_slam_maa2c_eqmarl_psi+" / "old-run"
+    legacy.mkdir(parents=True)
+    (legacy / "metrics-0.json").write_text('{"legacy": true}')
+    output = tmp_path / "active_slam_minigrid_eqmarl_psi+" / "run"
     output.mkdir(parents=True)
     (output / "metrics-0.json").write_text(
         json.dumps(

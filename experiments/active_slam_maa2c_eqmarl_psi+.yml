@@ -1,6 +1,6 @@
 experiment:
   roots:
-    root_dir: &root_dir 'experiment_output/active_slam_maa2c_eqmarl_psi+'
+    root_dir: &root_dir 'experiment_output/active_slam_minigrid_eqmarl_psi+'
     session_dir: &session_dir !join [*root_dir, '/', '{datetime_session:%Y%m%dT%H%M%S}']
 
   save:
@@ -14,7 +14,7 @@ experiment:
         save_weights_only: true
 
   train:
-    n_episodes: 2000
+    n_episodes: 1000
     max_steps_per_episode: 250
     callbacks:
       - func: eqmarl.AlgorithmResultCheckpoint
@@ -26,35 +26,35 @@ experiment:
       gamma: 0.99
       alpha: 0.001
       seed: 0
-      reward_aggregation: mean
+      reward_aggregation: sum
       episode_metrics_callback: eqmarl.environments.active_slam.episode_metrics_callback
       env:
         func: eqmarl.environments.active_slam.active_slam_make
-        params: {map_size: 24, n_agents: 2, n_beams: 36, time_limit: 250, seed: 0}
+        params: {map_size: 24, n_agents: 2, n_beams: 36, patch_size: 7, time_limit: 250, seed: 0}
       model_actor:
         init_func: eqmarl.active_slam_models.generate_actor_classical
         init_params:
-          observation_dim: 411
-          n_actions: 4
+          observation_dim: 147
+          n_actions: 3
           units: [100]
           name: *actor_name
-        build_shape: [null, 411]
+        build_shape: [null, 147]
       optimizer_actor:
         func: tensorflow.keras.optimizers.Adam
         params: {learning_rate: 0.0001}
       model_critic:
         init_func: eqmarl.active_slam_models.generate_critic_eqmarl
         init_params:
-          observation_dim: 411
+          observation_dim: 147
           n_agents: 2
-          n_actions: 4
+          n_actions: 3
           d_qubits: 4
           n_layers: 5
           nn_activation: linear
           trainable_w_enc: false
           input_entanglement_type: 'psi+'
           name: *critic_name
-        build_shape: [null, 2, 411]
+        build_shape: [null, 2, 147]
       optimizer_critic:
         - {func: tensorflow.keras.optimizers.Adam, params: {learning_rate: 0.001}}
         - {func: tensorflow.keras.optimizers.Adam, params: {learning_rate: 0.001}}

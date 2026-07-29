@@ -8,6 +8,7 @@ mode="${4:-}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
+export TF_FORCE_GPU_ALLOW_GROWTH="${TF_FORCE_GPU_ALLOW_GROWTH:-true}"
 
 python_command=(python)
 if ! python -c "import tensorflow_quantum, cirq, gymnasium" >/dev/null 2>&1; then

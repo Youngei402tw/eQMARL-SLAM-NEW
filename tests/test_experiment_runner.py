@@ -1,3 +1,4 @@
+import os
 import pytest
 from pathlib import Path
 
@@ -5,6 +6,14 @@ import eqmarl
 import yaml
 
 from scripts.experiment_runner import apply_fast_preset, apply_train_overrides, set_round_seed
+
+
+def test_runner_enables_incremental_gpu_allocation_before_eqmarl_import():
+    runner_path = Path(__file__).parents[1] / "scripts" / "experiment_runner.py"
+    source = runner_path.read_text()
+    setting = 'os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")'
+    assert os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] == "true"
+    assert source.index(setting) < source.index("import eqmarl")
 
 
 def test_round_seeds_use_non_overlapping_ranges():
@@ -53,7 +62,7 @@ def test_fast_preset_reduces_active_slam_dimensions_and_budget():
     assert config["experiment"]["train"] == {"n_episodes": 50, "max_steps_per_episode": 50}
     assert params["env"]["params"] == {"map_size": 16, "n_beams": 16, "patch_size": 7, "time_limit": 50}
     assert params["model_actor"]["init_params"]["n_layers"] == 2
-    assert params["model_actor"]["build_shape"] == [None, 175]
+    assert params["model_actor"]["build_shape"] == [None, 147]
     assert params["model_critic"]["init_params"]["units"] == [16]
 
 
@@ -68,10 +77,24 @@ def test_active_slam_configs_follow_four_method_minigrid_protocol():
         experiment = config["experiment"]
         params = experiment["algorithm"]["init_params"]
         actor = params["model_actor"]
+        critic = params["model_critic"]
+        assert experiment["roots"]["root_dir"].startswith(
+            "experiment_output/active_slam_minigrid_"
+        )
+        assert experiment["train"]["n_episodes"] == 1000
+        assert params["reward_aggregation"] == "sum"
+        assert params["env"]["params"]["patch_size"] == 7
         assert actor["init_func"] == "eqmarl.active_slam_models.generate_actor_classical"
+        assert actor["init_params"]["observation_dim"] == 147
+        assert actor["init_params"]["n_actions"] == 3
         assert actor["init_params"]["units"] == [100]
+        assert actor["build_shape"] == [None, 147]
+        assert critic["init_params"]["observation_dim"] == 147
+        assert critic["init_params"]["n_actions"] == 3
+        assert critic["build_shape"] == [None, 2, 147]
         assert params["optimizer_actor"]["params"]["learning_rate"] == 0.0001
         assert any(item["name"] == actor["init_params"]["name"] for item in experiment["save"]["model_files"])
+        assert any(item["name"] == critic["init_params"]["name"] for item in experiment["save"]["model_files"])
         framework = path.stem.removeprefix("active_slam_maa2c_")
         critic_optimizer = params["optimizer_critic"]
         if framework in {"eqmarl_psi+", "qfctde"}:

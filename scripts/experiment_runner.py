@@ -1,8 +1,12 @@
+import os
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+
+# eqmarl imports TensorFlow and initializes the GPU, so configure its allocator first.
+os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
 
 import eqmarl
 import tensorflow.keras as keras
@@ -158,7 +162,7 @@ def apply_fast_preset(config: dict):
     params = experiment['algorithm']['init_params']
     env = params['env']['params']
     patch_size, n_beams = 7, 16
-    observation_dim = patch_size * patch_size * 3 + n_beams + 12
+    observation_dim = patch_size * patch_size * 3
     train.update(n_episodes=50, max_steps_per_episode=50)
     env.update(map_size=16, n_beams=n_beams, patch_size=patch_size, time_limit=50)
     for key, model_config in params.items():

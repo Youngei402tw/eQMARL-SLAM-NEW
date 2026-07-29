@@ -14,11 +14,10 @@ import gymnasium as gym
 import numpy as np
 
 
-ACTION_FORWARD = 0
-ACTION_LEFT = 1
-ACTION_RIGHT = 2
-ACTION_WAIT = 3
-N_ACTIONS = 4
+ACTION_LEFT = 0
+ACTION_RIGHT = 1
+ACTION_FORWARD = 2
+N_ACTIONS = 3
 
 
 @dataclass
@@ -181,7 +180,7 @@ class MultiAgentSLAMEnv(gym.Env):
         n_agents: int = 2,
         n_beams: int = 36,
         lidar_range: float = 8.0,
-        patch_size: int = 11,
+        patch_size: int = 7,
         time_limit: int = 250,
         coverage_target: float = 0.9,
         obstacle_rectangles: int = 9,
@@ -211,7 +210,7 @@ class MultiAgentSLAMEnv(gym.Env):
             np.float32
         )
         self.action_space = gym.spaces.MultiDiscrete([N_ACTIONS] * self.n_agents)
-        self.observation_dim = self.patch_size * self.patch_size * 3 + self.n_beams + 12
+        self.observation_dim = self.patch_size * self.patch_size * 3
         local_space = gym.spaces.Box(
             low=-1.0,
             high=1.0,
@@ -226,7 +225,6 @@ class MultiAgentSLAMEnv(gym.Env):
         self.ground_truth = None
         self.reachable = None
         self.true_poses = None
-        self.previous_actions = np.full(self.n_agents, ACTION_WAIT, dtype=np.int32)
         self.step_count = 0
         self.collision_count = 0
         self.path_length = 0.0
@@ -332,7 +330,7 @@ class MultiAgentSLAMEnv(gym.Env):
         y = np.clip(int(round(pose[1])) + radius, radius, padded.shape[1] - radius - 1)
         patch = padded[:, y - radius : y + radius + 1, x - radius : x + radius + 1]
         quarter_turns = int(round(pose[2] / (np.pi / 2.0))) % 4
-        return np.rot90(patch, k=quarter_turns, axes=(1, 2)).copy()
+        return np.rot90(patch, k=(quarter_turns + 1) % 4, axes=(1, 2)).copy()
 
     def _observation(self) -> dict[str, np.ndarray]:
         beliefs = [backend.belief for backend in self.backends]
@@ -342,23 +340,10 @@ class MultiAgentSLAMEnv(gym.Env):
         frontier_channel = self._frontiers(fused_log_odds, fused_observed).astype(np.float32)
         channels = np.stack([occupancy, observed_channel, frontier_channel])
         observations = []
-        for index, belief in enumerate(beliefs):
-            teammate = beliefs[1 - index]
-            patch = self._extract_patch(channels, belief.pose).reshape(-1)
-            scan = self._ray_cast(self.true_poses[index]) / self.lidar_range
-            covariance = np.clip(np.diag(belief.covariance) / np.asarray([2.0, 2.0, 1.0]), 0, 1)
-            relative = teammate.pose - belief.pose
-            relative[2] = _wrap_angle(relative[2])
-            relative /= np.asarray([self.map_size, self.map_size, np.pi], dtype=np.float32)
-            teammate_uncertainty = np.asarray(
-                [np.clip(np.trace(teammate.covariance) / 5.0, 0.0, 1.0)], dtype=np.float32
-            )
-            previous_action = np.eye(N_ACTIONS, dtype=np.float32)[self.previous_actions[index]]
-            remaining = np.asarray([1.0 - self.step_count / self.time_limit], dtype=np.float32)
-            vector = np.concatenate(
-                [patch, scan, covariance, relative, teammate_uncertainty, previous_action, remaining]
-            ).astype(np.float32)
-            observations.append(np.clip(vector, -1.0, 1.0))
+        for belief in beliefs:
+            # MiniGrid flattens its channel-last 7x7x3 ego-centric image.
+            patch = self._extract_patch(channels, belief.pose).transpose(1, 2, 0)
+            observations.append(np.clip(patch.reshape(-1), -1.0, 1.0))
         local = np.stack(observations)
         return {"local": local, "critic": local.copy()}
 
@@ -374,9 +359,9 @@ class MultiAgentSLAMEnv(gym.Env):
     def _propose_motion(self, pose: np.ndarray, action: int) -> np.ndarray:
         proposal = pose.copy()
         if action == ACTION_LEFT:
-            proposal[2] = _wrap_angle(proposal[2] + np.pi / 2.0)
-        elif action == ACTION_RIGHT:
             proposal[2] = _wrap_angle(proposal[2] - np.pi / 2.0)
+        elif action == ACTION_RIGHT:
+            proposal[2] = _wrap_angle(proposal[2] + np.pi / 2.0)
         elif action == ACTION_FORWARD:
             proposal[0] += round(float(np.cos(proposal[2])))
             proposal[1] += round(float(np.sin(proposal[2])))
@@ -418,7 +403,6 @@ class MultiAgentSLAMEnv(gym.Env):
         self.rng = np.random.default_rng(resolved_seed)
         self.ground_truth, self.reachable = self._generate_map()
         self.true_poses = self._sample_initial_poses()
-        self.previous_actions[:] = ACTION_WAIT
         self.step_count = 0
         self.collision_count = 0
         self.path_length = 0.0
@@ -440,7 +424,6 @@ class MultiAgentSLAMEnv(gym.Env):
         odometry, collisions = self._execute_actions(actions)
         for index, backend in enumerate(self.backends):
             backend.update(odometry[index], self._ray_cast(self.true_poses[index]))
-        self.previous_actions = actions
         self.step_count += 1
         self.collision_count += collisions
         coverage = self._coverage()

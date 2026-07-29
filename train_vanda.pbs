@@ -43,7 +43,7 @@ if [[ "$SLAM_MODE" == "fast" ]]; then
     SLAM_N_EPISODES="${SLAM_N_EPISODES:-50}"
     SLAM_MAX_STEPS="${SLAM_MAX_STEPS:-50}"
 else
-    SLAM_N_EPISODES="${SLAM_N_EPISODES:-2000}"
+    SLAM_N_EPISODES="${SLAM_N_EPISODES:-1000}"
     SLAM_MAX_STEPS="${SLAM_MAX_STEPS:-250}"
 fi
 
@@ -60,6 +60,7 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate eQMARL_SLAM
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+export TF_FORCE_GPU_ALLOW_GROWTH="${TF_FORCE_GPU_ALLOW_GROWTH:-true}"
 echo "Conda env: $CONDA_DEFAULT_ENV"
 echo "Python: $(python --version)"
 python -c "import cirq, eqmarl, gymnasium, tensorflow_quantum; print('eQMARL:', eqmarl.__file__)"
@@ -98,5 +99,5 @@ echo ""
 echo "==========================================="
 echo "Training complete!"
 echo "End time: $(date)"
-echo "Results saved under: experiment_output/active_slam_maa2c_${SLAM_FRAMEWORK}/"
+echo "Results saved under: experiment_output/active_slam_minigrid_${SLAM_FRAMEWORK}/"
 echo "==========================================="

@@ -2,12 +2,14 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 import time
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
 
 import numpy as np
 import yaml

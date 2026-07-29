@@ -24,11 +24,11 @@ DEFAULT_METRICS = (
 
 
 def discover_metric_files(root: str | Path = "experiment_output") -> dict[str, list[Path]]:
-    """Find active-SLAM metrics files grouped by experiment directory."""
+    """Find MiniGrid-faithful SLAM metrics grouped by framework."""
     root = Path(root)
     groups = {}
-    for filepath in sorted(root.glob("active_slam_maa2c_*/*/metrics-*.json")):
-        framework = filepath.parents[1].name.removeprefix("active_slam_maa2c_")
+    for filepath in sorted(root.glob("active_slam_minigrid_*/*/metrics-*.json")):
+        framework = filepath.parents[1].name.removeprefix("active_slam_minigrid_")
         groups.setdefault(framework, []).append(filepath)
     return groups
 

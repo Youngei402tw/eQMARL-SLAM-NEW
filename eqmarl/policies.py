@@ -6,7 +6,6 @@ from .environments.active_slam import (
     ACTION_FORWARD,
     ACTION_LEFT,
     ACTION_RIGHT,
-    ACTION_WAIT,
     MultiAgentSLAMEnv,
     _wrap_angle,
 )
@@ -17,7 +16,7 @@ class RandomJointPolicy:
         self.rng = np.random.default_rng(seed)
 
     def action(self, env: MultiAgentSLAMEnv, observation=None) -> list[int]:
-        return self.rng.integers(0, 4, size=env.n_agents).tolist()
+        return self.rng.integers(0, env.action_space.nvec[0], size=env.n_agents).tolist()
 
 
 class FrontierJointPolicy:
@@ -65,19 +64,19 @@ class FrontierJointPolicy:
     def _motion_toward(pose: np.ndarray, target: np.ndarray) -> int:
         delta = target.astype(np.float32) - pose[:2]
         if np.linalg.norm(delta) < 0.75:
-            return ACTION_WAIT
+            return ACTION_LEFT
         desired = np.arctan2(delta[1], delta[0])
         error = _wrap_angle(desired - float(pose[2]))
         if abs(error) <= np.pi / 4.0:
             return ACTION_FORWARD
-        return ACTION_LEFT if error > 0 else ACTION_RIGHT
+        return ACTION_RIGHT if error > 0 else ACTION_LEFT
 
     def action(self, env: MultiAgentSLAMEnv, observation=None) -> list[int]:
         beliefs = [backend.belief for backend in env.backends]
         fused, observed = env._fuse_beliefs(beliefs)
         frontiers = env._frontiers(fused, observed)
         if not np.any(frontiers):
-            return [ACTION_WAIT] * env.n_agents
+            return [ACTION_LEFT] * env.n_agents
         traversable = observed & (fused < 0.0)
         assigned = set()
         actions = []

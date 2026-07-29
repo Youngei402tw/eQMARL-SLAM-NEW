@@ -99,11 +99,16 @@ The SLAM comparison configurations are:
 | `active_slam_maa2c_fctde.yml` | Fully centralized classical critic with early feature mixing. |
 | `active_slam_maa2c_sctde.yml` | Separated classical critic with late per-robot aggregation. |
 
-The four methods follow the MiniGrid comparison protocol: they share the same
-100-unit classical actor, the quantum critics use per-agent locally connected
-input reduction and MiniGrid's four optimizer learning rates, and the
-classical critics use 100-unit centralized or separated branches. Each
+The four methods follow the MiniGrid comparison protocol. Every robot receives
+an ego-centric 7x7x3 belief image and chooses the same three relative actions
+(`left`, `right`, `forward`) used by MiniGrid. The methods share a 100-unit
+classical actor; quantum critics use per-agent locally connected input
+reduction and MiniGrid's four optimizer learning rates; classical critics use
+100-unit centralized or separated branches. Training uses MiniGrid's summed
+joint reward, gamma, entropy coefficient, and 1,000-episode full budget. Each
 configuration saves both actor and critic weights for held-out evaluation.
+Faithful runs are written under `experiment_output/active_slam_minigrid_*` so
+the visualization cannot silently mix them with results from older protocols.
 
 TensorFlow Quantum requires the legacy Python 3.9 environment specified by
 this project. Build the reproducible container and run a configuration with:
@@ -130,7 +135,7 @@ bash scripts/run_active_slam_fast.sh
 ```
 
 It runs one round of 50 episodes with 50 steps each, a 16x16 map, 16 LiDAR
-beams, 7x7 belief patches, two quantum layers, and narrower networks. Pass
+beams, two quantum layers, and narrower networks. Pass
 `[rounds] [episodes] [max_steps]` to override its training budget. Fast runs
 must not be mixed with the full-size results in a final comparison.
 
