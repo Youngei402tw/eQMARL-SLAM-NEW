@@ -1,5 +1,5 @@
 import random
-from typing import Union
+from typing import Optional, Union
 
 import gymnasium as gym
 import numpy as np
@@ -28,9 +28,13 @@ class MAA2C(VectorAlgorithm):
         optimizer_critic: Union[keras.optimizers.Optimizer, list[keras.optimizers.Optimizer]],
         gamma: float = 1.0,
         alpha: float = 0.001,
+        alpha_final: Optional[float] = None,
+        alpha_decay_episodes: int = 0,
         episode_metrics_callback=None,
         seed: int = 0,
         reward_aggregation: str = "sum",
+        normalize_advantages: bool = False,
+        gradient_clip_norm: Optional[float] = None,
     ):
         if isinstance(env, gym.vector.VectorEnv):
             super().__init__(env, episode_metrics_callback)
@@ -61,16 +65,30 @@ class MAA2C(VectorAlgorithm):
         self.optimizer_actor = optimizer_actor
         self.optimizer_critic = optimizer_critic
         self.gamma = float(gamma)
-        self.alpha = float(alpha)
+        self.alpha_initial = float(alpha)
+        self.alpha_final = float(alpha if alpha_final is None else alpha_final)
+        self.alpha_decay_episodes = int(alpha_decay_episodes)
+        self.alpha = self.alpha_initial
         self.seed = int(seed)
         if reward_aggregation not in ("sum", "mean"):
             raise ValueError("reward_aggregation must be 'sum' or 'mean'")
         self.reward_aggregation = reward_aggregation
+        self.normalize_advantages = bool(normalize_advantages)
+        self.gradient_clip_norm = (
+            None if gradient_clip_norm is None else float(gradient_clip_norm)
+        )
         self.rng = np.random.default_rng(self.seed)
         random.seed(self.seed)
         np.random.seed(self.seed)
         tf.random.set_seed(self.seed)
         self.last_losses = {}
+        self.episode_diagnostics = {}
+
+    def _entropy_alpha(self, episode: int) -> float:
+        if self.alpha_decay_episodes <= 0:
+            return self.alpha_final
+        fraction = min(1.0, max(0.0, episode / self.alpha_decay_episodes))
+        return self.alpha_initial + fraction * (self.alpha_final - self.alpha_initial)
 
     @staticmethod
     def _split_observation(observation):
@@ -129,6 +147,21 @@ class MAA2C(VectorAlgorithm):
     def _actor_objective(policy_loss, entropy, alpha):
         return policy_loss - alpha * entropy
 
+    @staticmethod
+    def _normalize_advantage_tensor(advantages, epsilon: float = 1e-8):
+        mean = tf.reduce_mean(advantages)
+        std = tf.math.reduce_std(advantages)
+        return (advantages - mean) / (std + epsilon)
+
+    def _prepare_gradients(self, gradients):
+        present = [gradient for gradient in gradients if gradient is not None]
+        norm = tf.linalg.global_norm(present) if present else tf.constant(0.0)
+        if self.gradient_clip_norm is None or not present:
+            return gradients, norm
+        clipped, _ = tf.clip_by_global_norm(present, self.gradient_clip_norm)
+        iterator = iter(clipped)
+        return [next(iterator) if gradient is not None else None for gradient in gradients], norm
+
     def update(self, batch: list[MultiAgentInteraction]):
         if not batch:
             return
@@ -160,7 +193,11 @@ class MAA2C(VectorAlgorithm):
             values = self.model_critic(critic_states)
             next_values = self.model_critic(next_critic_states)
             targets = self._td_targets(team_rewards, terminals, self.gamma, next_values)
-            advantages = tf.stop_gradient(targets - values)
+            raw_advantages = tf.stop_gradient(targets - values)
+            advantages = (
+                self._normalize_advantage_tensor(raw_advantages)
+                if self.normalize_advantages else raw_advantages
+            )
 
             all_probs = []
             all_log_probs = []
@@ -186,6 +223,8 @@ class MAA2C(VectorAlgorithm):
 
         actor_gradients = actor_tape.gradient(actor_loss, self.model_actor.trainable_variables)
         critic_gradients = critic_tape.gradient(critic_loss, self.model_critic.trainable_variables)
+        actor_gradients, actor_gradient_norm = self._prepare_gradients(actor_gradients)
+        critic_gradients, critic_gradient_norm = self._prepare_gradients(critic_gradients)
         self._apply_gradients(
             self.optimizer_actor, actor_gradients, self.model_actor.trainable_variables
         )
@@ -193,9 +232,18 @@ class MAA2C(VectorAlgorithm):
             self.optimizer_critic, critic_gradients, self.model_critic.trainable_variables
         )
         self.last_losses = {
-            "actor": float(actor_loss.numpy()),
-            "critic": float(critic_loss.numpy()),
-            "entropy": float(entropy.numpy()),
+            "actor_loss": float(actor_loss.numpy()),
+            "critic_loss": float(critic_loss.numpy()),
+            "policy_entropy": float(entropy.numpy()),
+            "entropy_alpha": self.alpha,
+            "actor_gradient_norm": float(actor_gradient_norm.numpy()),
+            "critic_gradient_norm": float(critic_gradient_norm.numpy()),
+            "value_mean": float(tf.reduce_mean(values).numpy()),
+            "value_std": float(tf.math.reduce_std(values).numpy()),
+            "target_mean": float(tf.reduce_mean(targets).numpy()),
+            "target_std": float(tf.math.reduce_std(targets).numpy()),
+            "advantage_mean": float(tf.reduce_mean(raw_advantages).numpy()),
+            "advantage_std": float(tf.math.reduce_std(raw_advantages).numpy()),
         }
 
     def _reset_environment(self, episode: int):
@@ -207,11 +255,14 @@ class MAA2C(VectorAlgorithm):
     def run_episode(self, episode: int, total_steps: int, max_steps_per_episode: int):
         episode_reward = np.zeros(self.n_agents, dtype=np.float32)
         batch = []
+        self.alpha = self._entropy_alpha(episode)
+        action_counts = np.zeros(int(self.env.action_space.nvec[0]), dtype=np.int64)
         observation, _ = self._reset_environment(episode)
 
         for step_index in range(max_steps_per_episode):
             local, critic = self._split_observation(observation)
             actions, _ = self.policy(observation)
+            action_counts += np.bincount(actions, minlength=len(action_counts))
             next_observation, rewards, terminated, truncated, _ = self.env.step(actions)
             next_local, next_critic = self._split_observation(next_observation)
             terminated_flag = bool(np.any(terminated))
@@ -236,4 +287,20 @@ class MAA2C(VectorAlgorithm):
                 break
 
         self.update(batch)
+        total_actions = max(1, int(action_counts.sum()))
+        action_diagnostics = {
+            f"action_{index}_fraction": float(count / total_actions)
+            for index, count in enumerate(action_counts)
+        }
+        if len(action_counts) == 3:
+            action_diagnostics.update(
+                left_action_fraction=action_diagnostics["action_0_fraction"],
+                right_action_fraction=action_diagnostics["action_1_fraction"],
+                forward_action_fraction=action_diagnostics["action_2_fraction"],
+            )
+        self.episode_diagnostics = {
+            **self.last_losses,
+            **action_diagnostics,
+            "episode_steps": float(step_index + 1),
+        }
         return episode_reward, batch, step_index + 1

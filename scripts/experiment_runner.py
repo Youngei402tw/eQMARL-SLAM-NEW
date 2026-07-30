@@ -155,6 +155,46 @@ def apply_train_overrides(config: dict, n_episodes=None, max_steps_per_episode=N
             env_params['time_limit'] = max_steps_per_episode
 
 
+def apply_seed_override(config: dict, seed: int):
+    """Set the algorithm and environment seed for a standalone cluster job."""
+    params = config['experiment']['algorithm']['init_params']
+    params['seed'] = int(seed)
+    params.get('env', {}).get('params', {})['seed'] = int(seed)
+
+
+def apply_pilot_monitor(config: dict):
+    """Attach early stopping used only by multi-seed pilot jobs."""
+    config['experiment']['train'].setdefault('callbacks', []).append(
+        {
+            'func': 'eqmarl.ActiveSLAMPilotMonitor',
+            'params': {
+                'window': 100,
+                'turn_threshold': 0.85,
+                'max_forward_fraction': 0.05,
+                'coverage_drop': 0.10,
+                'verbose': True,
+            },
+        }
+    )
+
+
+def apply_output_protocol(config: dict, protocol: str):
+    """Isolate fast, pilot, and full outputs without duplicating configurations."""
+    if protocol not in {'fast', 'pilot', 'full'}:
+        raise ValueError(f"unsupported active-SLAM output protocol: {protocol}")
+    source = 'active_slam_faithful_full_'
+    target = f'active_slam_faithful_{protocol}_'
+
+    def replace(value):
+        if isinstance(value, dict):
+            return {key: replace(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [replace(item) for item in value]
+        return value.replace(source, target) if isinstance(value, str) else value
+
+    config['experiment'] = replace(config['experiment'])
+
+
 def apply_fast_preset(config: dict):
     """Shrink active-SLAM models and environment for rapid iteration only."""
     experiment = config['experiment']
@@ -162,14 +202,14 @@ def apply_fast_preset(config: dict):
     params = experiment['algorithm']['init_params']
     env = params['env']['params']
     patch_size, n_beams = 7, 16
-    observation_dim = patch_size * patch_size * 3
+    local_dim = patch_size * patch_size * 3
     train.update(n_episodes=50, max_steps_per_episode=50)
     env.update(map_size=16, n_beams=n_beams, patch_size=patch_size, time_limit=50)
     for key, model_config in params.items():
         if not key.startswith('model_'):
             continue
         init_params = model_config['init_params']
-        init_params['observation_dim'] = observation_dim
+        init_params['observation_dim'] = local_dim
         if 'n_layers' in init_params:
             init_params['n_layers'] = 2
             if 'encoder_units' in init_params:
@@ -177,8 +217,8 @@ def apply_fast_preset(config: dict):
         elif 'units' in init_params:
             init_params['units'] = [32] if key == 'model_actor' else [16]
         shape = model_config['build_shape']
-        model_config['build_shape'] = [None, observation_dim] if len(shape) == 2 else [
-            None, 2, observation_dim
+        model_config['build_shape'] = [None, local_dim] if len(shape) == 2 else [
+            None, 2, local_dim
         ]
 
 
@@ -196,11 +236,6 @@ def main(
     datetime_session = datetime.now()
     print(f"Training session start at {datetime_session.isoformat()}")
 
-    # Create a directory for this training session.
-    session_dir = Path(config['experiment']['roots']['session_dir'].format(datetime_session=datetime_session))
-    if not flag_dry_run: # Only create output directory if dry-run is NOT specified.
-        session_dir.expanduser().mkdir(parents=True, exist_ok=True)
-
     if n_train_rounds > 1:
         print(f'Training for {n_train_rounds} rounds')
 
@@ -209,6 +244,14 @@ def main(
 
         config_session = copy.deepcopy(config)
         set_round_seed(config_session, r)
+        round_seed = config_session['experiment']['algorithm']['init_params'].get('seed', 0)
+        session_dir = Path(config_session['experiment']['roots']['session_dir'].format(
+            datetime_session=datetime_session, seed=round_seed
+        ))
+        if not flag_dry_run:
+            session_dir.expanduser().mkdir(parents=True, exist_ok=True)
+            with (session_dir / 'config.yml').open('w') as config_file:
+                yaml.safe_dump(config_session, config_file, sort_keys=False)
         exp = load_experiment(config_session, flag_print_model_summary=flag_print_model_summary)
         algo: eqmarl.Algorithm = exp['algorithm']
         train_params = exp['train']
@@ -236,6 +279,7 @@ def main(
             metrics_file = metrics_file.format(
                 datetime_session=datetime_session,
                 round=r,
+                seed=algo.seed,
             )
             algo.save_train_results(metrics_file, reward_history, metrics_history)
             print(f"Saved metrics file {metrics_file}")
@@ -245,6 +289,7 @@ def main(
             model_file = d['filepath'].format(
                 datetime_session=datetime_session,
                 round=r,
+                seed=algo.seed,
             )
             algo.save_model(d['name'], model_file, d['save_weights_only'])
             print(f"Saved model file {model_file}")
@@ -293,9 +338,19 @@ def get_opts() -> argparse.Namespace:
         default=None,
         help='Override the maximum episode length from the experiment configuration.',
         )
-    parser.add_argument('--fast',
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--fast',
         action='store_true',
         help='Use a smaller active-SLAM environment and model for rapid iteration.',
+        )
+    mode.add_argument('--pilot',
+        action='store_true',
+        help='Enable active-SLAM policy-collapse monitoring for a pilot run.',
+        )
+    parser.add_argument('--seed',
+        type=int,
+        default=None,
+        help='Override the algorithm and environment seed.',
         )
     
     
@@ -317,6 +372,12 @@ if __name__ == '__main__':
 
     if opts.fast:
         apply_fast_preset(config)
+        apply_output_protocol(config, 'fast')
+    if opts.pilot:
+        apply_pilot_monitor(config)
+        apply_output_protocol(config, 'pilot')
+    if opts.seed is not None:
+        apply_seed_override(config, opts.seed)
     apply_train_overrides(
         config,
         n_episodes=opts.n_episodes,

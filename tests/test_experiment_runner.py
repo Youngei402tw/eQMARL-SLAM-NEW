@@ -5,7 +5,14 @@ from pathlib import Path
 import eqmarl
 import yaml
 
-from scripts.experiment_runner import apply_fast_preset, apply_train_overrides, set_round_seed
+from scripts.experiment_runner import (
+    apply_fast_preset,
+    apply_output_protocol,
+    apply_pilot_monitor,
+    apply_seed_override,
+    apply_train_overrides,
+    set_round_seed,
+)
 
 
 def test_runner_enables_incremental_gpu_allocation_before_eqmarl_import():
@@ -46,6 +53,32 @@ def test_training_overrides_are_validated():
         apply_train_overrides(config, n_episodes=0)
 
 
+def test_seed_override_and_pilot_monitor_are_explicit():
+    config = {
+        "experiment": {
+            "train": {},
+            "algorithm": {"init_params": {"seed": 0, "env": {"params": {"seed": 0}}}},
+        }
+    }
+    apply_seed_override(config, 12)
+    apply_pilot_monitor(config)
+    params = config["experiment"]["algorithm"]["init_params"]
+    assert params["seed"] == params["env"]["params"]["seed"] == 12
+    assert config["experiment"]["train"]["callbacks"][-1]["func"].endswith(
+        "ActiveSLAMPilotMonitor"
+    )
+
+
+def test_output_protocol_rewrites_all_active_slam_paths():
+    config = {"experiment": {
+        "roots": {"root_dir": "experiment_output/active_slam_faithful_full_fctde"},
+        "save": {"metrics_file": "active_slam_faithful_full_fctde/metrics.json"},
+    }}
+    apply_output_protocol(config, "pilot")
+    assert "faithful_pilot" in config["experiment"]["roots"]["root_dir"]
+    assert "faithful_pilot" in config["experiment"]["save"]["metrics_file"]
+
+
 def test_fast_preset_reduces_active_slam_dimensions_and_budget():
     config = {
         "experiment": {
@@ -64,6 +97,7 @@ def test_fast_preset_reduces_active_slam_dimensions_and_budget():
     assert params["model_actor"]["init_params"]["n_layers"] == 2
     assert params["model_actor"]["build_shape"] == [None, 147]
     assert params["model_critic"]["init_params"]["units"] == [16]
+    assert params["model_critic"]["build_shape"] == [None, 2, 147]
 
 
 def test_active_slam_configs_follow_four_method_minigrid_protocol():
@@ -79,17 +113,23 @@ def test_active_slam_configs_follow_four_method_minigrid_protocol():
         actor = params["model_actor"]
         critic = params["model_critic"]
         assert experiment["roots"]["root_dir"].startswith(
-            "experiment_output/active_slam_minigrid_"
+            "experiment_output/active_slam_faithful_full_"
         )
         assert experiment["train"]["n_episodes"] == 1000
-        assert params["reward_aggregation"] == "sum"
+        assert params["reward_aggregation"] == "mean"
+        assert params["normalize_advantages"] is True
+        assert params["gradient_clip_norm"] == 1.0
+        assert params["alpha"] == 0.01
+        assert params["alpha_final"] == 0.001
         assert params["env"]["params"]["patch_size"] == 7
+        assert "critic_map_size" not in params["env"]["params"]
         assert actor["init_func"] == "eqmarl.active_slam_models.generate_actor_classical"
         assert actor["init_params"]["observation_dim"] == 147
         assert actor["init_params"]["n_actions"] == 3
         assert actor["init_params"]["units"] == [100]
         assert actor["build_shape"] == [None, 147]
         assert critic["init_params"]["observation_dim"] == 147
+        assert critic["init_params"]["observation_dim"] == actor["init_params"]["observation_dim"]
         assert critic["init_params"]["n_actions"] == 3
         assert critic["build_shape"] == [None, 2, 147]
         assert params["optimizer_actor"]["params"]["learning_rate"] == 0.0001
@@ -99,7 +139,7 @@ def test_active_slam_configs_follow_four_method_minigrid_protocol():
         critic_optimizer = params["optimizer_critic"]
         if framework in {"eqmarl_psi+", "qfctde"}:
             assert [item["params"]["learning_rate"] for item in critic_optimizer] == [
-                0.001, 0.001, 0.01, 0.1
+                0.001, 0.001, 0.01, 0.01
             ]
         else:
             assert critic_optimizer["params"]["learning_rate"] == 0.0001

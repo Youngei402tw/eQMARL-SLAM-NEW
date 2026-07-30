@@ -7,7 +7,9 @@
 # =============================================================================
 # One-framework, one-seed active-SLAM training for eQMARL on Vanda
 #
-# Submit all four separate jobs: bash scripts/submit_vanda_four.sh
+# Submit a three-seed pilot: bash scripts/submit_vanda_pilot.sh
+# Submit a five-seed full run: bash scripts/submit_vanda_full.sh
+# Submit all four one-seed jobs: bash scripts/submit_vanda_four.sh
 # Override a budget: SLAM_N_EPISODES=1000 bash scripts/submit_vanda_four.sh full
 # Submit one job manually: qsub -v SLAM_FRAMEWORK=fctde train_vanda.pbs
 # Monitor: qstat -u $USER       Cancel: qdel <PBS_JOBID>
@@ -27,9 +29,10 @@ echo ""
 # ---------------------------------------------------------------------------
 SLAM_MODE="${SLAM_MODE:-fast}"
 SLAM_FRAMEWORK="${SLAM_FRAMEWORK:-}"
+SLAM_SEED="${SLAM_SEED:-0}"
 
-if [[ "$SLAM_MODE" != "fast" && "$SLAM_MODE" != "full" ]]; then
-    echo "SLAM_MODE must be fast or full, got: $SLAM_MODE" >&2
+if [[ "$SLAM_MODE" != "fast" && "$SLAM_MODE" != "pilot" && "$SLAM_MODE" != "full" ]]; then
+    echo "SLAM_MODE must be fast, pilot, or full, got: $SLAM_MODE" >&2
     exit 2
 fi
 case "$SLAM_FRAMEWORK" in
@@ -39,16 +42,23 @@ case "$SLAM_FRAMEWORK" in
         exit 2
         ;;
 esac
+if [[ ! "$SLAM_SEED" =~ ^[0-9]+$ ]]; then
+    echo "SLAM_SEED must be a non-negative integer, got: $SLAM_SEED" >&2
+    exit 2
+fi
 if [[ "$SLAM_MODE" == "fast" ]]; then
     SLAM_N_EPISODES="${SLAM_N_EPISODES:-50}"
     SLAM_MAX_STEPS="${SLAM_MAX_STEPS:-50}"
+elif [[ "$SLAM_MODE" == "pilot" ]]; then
+    SLAM_N_EPISODES="${SLAM_N_EPISODES:-400}"
+    SLAM_MAX_STEPS="${SLAM_MAX_STEPS:-250}"
 else
     SLAM_N_EPISODES="${SLAM_N_EPISODES:-1000}"
     SLAM_MAX_STEPS="${SLAM_MAX_STEPS:-250}"
 fi
 
 echo "Mode: $SLAM_MODE"
-echo "Framework: $SLAM_FRAMEWORK | Seeds: 1"
+echo "Framework: $SLAM_FRAMEWORK | Seed: $SLAM_SEED"
 echo "Episodes: $SLAM_N_EPISODES | Steps: $SLAM_MAX_STEPS"
 echo ""
 
@@ -83,14 +93,16 @@ if [[ ! -f "$config" ]]; then
     exit 2
 fi
 args=("$config" -r 1 --n-episodes "$SLAM_N_EPISODES"
-    --max-steps-per-episode "$SLAM_MAX_STEPS")
+    --max-steps-per-episode "$SLAM_MAX_STEPS" --seed "$SLAM_SEED")
 if [[ "$SLAM_MODE" == "fast" ]]; then
     args+=(--fast)
+elif [[ "$SLAM_MODE" == "pilot" ]]; then
+    args+=(--pilot)
 fi
 echo "==========================================="
 echo "Starting $SLAM_FRAMEWORK with $config"
 echo "==========================================="
-python scripts/experiment_runner.py "${args[@]}" 2>&1 | tee "training-${SLAM_FRAMEWORK}-${PBS_JOBID}.log"
+python scripts/experiment_runner.py "${args[@]}" 2>&1 | tee "training-${SLAM_FRAMEWORK}-seed${SLAM_SEED}-${PBS_JOBID}.log"
 
 # ---------------------------------------------------------------------------
 # Summary
@@ -99,5 +111,5 @@ echo ""
 echo "==========================================="
 echo "Training complete!"
 echo "End time: $(date)"
-echo "Results saved under: experiment_output/active_slam_minigrid_${SLAM_FRAMEWORK}/"
+echo "Results saved under: experiment_output/active_slam_faithful_${SLAM_MODE}_${SLAM_FRAMEWORK}/"
 echo "==========================================="

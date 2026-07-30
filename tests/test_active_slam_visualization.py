@@ -45,6 +45,33 @@ def test_metric_loading_summary_and_plots(tmp_path):
     plt.close(figure)
 
 
+def test_faithful_metrics_take_precedence_over_previous_protocols(tmp_path):
+    for protocol, reward in (
+        ("minigrid", 1.0),
+        ("stable_full", 2.0),
+        ("faithful_pilot", 3.0),
+    ):
+        output = tmp_path / f"active_slam_{protocol}_fctde" / "run"
+        output.mkdir(parents=True)
+        (output / "metrics-0.json").write_text(json.dumps({
+            "reward": [[reward, reward]], "metrics": {"coverage": [0.5]}
+        }))
+    groups = discover_metric_files(tmp_path)
+    assert list(groups) == ["fctde"]
+    assert load_metrics(groups)["team_reward"].tolist() == [3.0]
+
+
+def test_faithful_full_metrics_take_precedence_over_faithful_pilot(tmp_path):
+    for protocol, reward in (("faithful_pilot", 1.0), ("faithful_full", 2.0)):
+        output = tmp_path / f"active_slam_{protocol}_fctde" / "run"
+        output.mkdir(parents=True)
+        (output / "metrics-0.json").write_text(json.dumps({
+            "reward": [[reward, reward]], "metrics": {"coverage": [0.5]}
+        }))
+    groups = discover_metric_files(tmp_path)
+    assert load_metrics(groups)["team_reward"].tolist() == [2.0]
+
+
 def test_frontier_rollout_can_be_rendered():
     env = MultiAgentSLAMEnv(map_size=16, time_limit=3)
     frames = rollout(env, FrontierJointPolicy(), seed=2)

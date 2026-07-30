@@ -140,7 +140,7 @@ class AlgorithmModelCheckpoint(Callback):
             fmt_dict = {}
             if 'episode' in fmt_keys:
                 fmt_dict['episode'] = episode+1
-                fmt_keys.pop('episode')
+                fmt_keys.remove('episode')
             for key in fmt_keys:
                 fmt_dict[key] = getattr(self.algorithm, key)
 
@@ -175,7 +175,7 @@ class AlgorithmResultCheckpoint(Callback):
             fmt_dict = {}
             if 'episode' in fmt_keys:
                 fmt_dict['episode'] = episode+1
-                fmt_keys.pop('episode')
+                fmt_keys.remove('episode')
             for key in fmt_keys:
                 fmt_dict[key] = getattr(self.algorithm, key)
 
@@ -187,3 +187,54 @@ class AlgorithmResultCheckpoint(Callback):
             self.algorithm.save(filepath=fps)
             if self.verbose:
                 print(f"Saving results at episode {episode+1} to file {fps}")
+
+
+class ActiveSLAMPilotMonitor(Callback):
+    """Stop pilot training after sustained policy collapse or coverage loss."""
+
+    def __init__(
+        self,
+        window: int = 100,
+        turn_threshold: float = 0.85,
+        max_forward_fraction: float = 0.05,
+        coverage_drop: float = 0.10,
+        verbose: bool = True,
+    ):
+        super().__init__()
+        self.window = int(window)
+        self.turn_threshold = float(turn_threshold)
+        self.max_forward_fraction = float(max_forward_fraction)
+        self.coverage_drop = float(coverage_drop)
+        self.verbose = bool(verbose)
+
+    @staticmethod
+    def _mean(records, key):
+        return sum(float(record[key]) for record in records) / len(records)
+
+    def on_episode_end(self, episode: int):
+        history = self.algorithm.episode_metrics_history
+        if len(history) < self.window:
+            return
+        recent = history[-self.window:]
+        left = self._mean(recent, "left_action_fraction")
+        right = self._mean(recent, "right_action_fraction")
+        forward = self._mean(recent, "forward_action_fraction")
+        reason = None
+        if max(left, right) >= self.turn_threshold or forward <= self.max_forward_fraction:
+            reason = (
+                f"sustained turn collapse over {self.window} episodes "
+                f"(left={left:.3f}, right={right:.3f}, forward={forward:.3f})"
+            )
+        elif len(history) >= 2 * self.window:
+            previous = history[-2 * self.window:-self.window]
+            coverage_change = self._mean(recent, "coverage") - self._mean(previous, "coverage")
+            if coverage_change <= -self.coverage_drop:
+                reason = (
+                    f"coverage fell by {abs(coverage_change):.3f} over consecutive "
+                    f"{self.window}-episode windows"
+                )
+        if reason:
+            self.algorithm.stop_training = True
+            self.algorithm.stop_reason = reason
+            if self.verbose:
+                print(f"Pilot monitor: {reason}")

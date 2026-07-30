@@ -1,7 +1,7 @@
 experiment:
   roots:
-    root_dir: &root_dir 'experiment_output/active_slam_minigrid_fctde'
-    session_dir: &session_dir !join [*root_dir, '/', '{datetime_session:%Y%m%dT%H%M%S}']
+    root_dir: &root_dir 'experiment_output/active_slam_faithful_full_fctde'
+    session_dir: &session_dir !join [*root_dir, '/', '{datetime_session:%Y%m%dT%H%M%S}-seed{seed}']
   save:
     metrics_file: &metrics_file !join [*session_dir, '/', 'metrics-{round}.json']
     model_files:
@@ -13,13 +13,21 @@ experiment:
     callbacks:
       - func: eqmarl.AlgorithmResultCheckpoint
         params: {filepath: *metrics_file, save_freq: 100, verbose: true}
+      - func: eqmarl.AlgorithmModelCheckpoint
+        params: {model_name: *actor_name, filepath: !join [*session_dir, '/actor-episode-{episode}.weights.h5'], save_freq: 100, save_weights_only: true}
+      - func: eqmarl.AlgorithmModelCheckpoint
+        params: {model_name: *critic_name, filepath: !join [*session_dir, '/critic-episode-{episode}.weights.h5'], save_freq: 100, save_weights_only: true}
   algorithm:
     init_func: eqmarl.algorithms.MAA2C
     init_params:
       gamma: 0.99
-      alpha: 0.001
+      alpha: 0.01
+      alpha_final: 0.001
+      alpha_decay_episodes: 500
       seed: 0
-      reward_aggregation: sum
+      reward_aggregation: mean
+      normalize_advantages: true
+      gradient_clip_norm: 1.0
       episode_metrics_callback: eqmarl.environments.active_slam.episode_metrics_callback
       env:
         func: eqmarl.environments.active_slam.active_slam_make

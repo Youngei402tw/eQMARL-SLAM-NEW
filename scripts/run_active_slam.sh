@@ -29,11 +29,11 @@ if [[ -n "$max_steps" ]]; then
     overrides+=(--max-steps-per-episode "$max_steps")
 fi
 if [[ -n "$mode" ]]; then
-    if [[ "$mode" != "--fast" ]]; then
-        echo "Fourth argument must be --fast when provided." >&2
+    if [[ "$mode" != "--fast" && "$mode" != "--pilot" ]]; then
+        echo "Fourth argument must be --fast or --pilot when provided." >&2
         exit 2
     fi
-    overrides+=(--fast)
+    overrides+=("$mode")
 fi
 
 echo "Using: ${python_command[*]}"

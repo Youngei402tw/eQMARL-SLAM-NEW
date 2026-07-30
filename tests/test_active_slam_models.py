@@ -51,13 +51,14 @@ def test_quantum_model_shapes():
 
 def test_minigrid_faithful_active_slam_shapes_and_parameter_budgets():
     actor = generate_faithful_actor(147)
-    eqmarl = generate_faithful_eqmarl_critic(147, n_layers=1)
-    qfctde = generate_faithful_qfctde_critic(147, n_layers=1)
+    eqmarl = generate_faithful_eqmarl_critic(147, n_layers=5)
+    qfctde = generate_faithful_qfctde_critic(147, n_layers=5)
     fctde = generate_faithful_fctde_critic(147)
     sctde = generate_faithful_sctde_critic(147)
     assert actor.compute_output_shape((None, 147)).as_list() == [None, 3]
     assert eqmarl.compute_output_shape((None, 2, 147)).as_list() == [None, 1]
     assert qfctde.count_params() == eqmarl.count_params()
+    assert eqmarl.count_params() == 3817
     assert len(eqmarl.trainable_variables) == len(qfctde.trainable_variables) == 4
     assert fctde.count_params() == 29601
     assert sctde.count_params() == 29801

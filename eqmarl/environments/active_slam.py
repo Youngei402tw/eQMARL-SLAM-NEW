@@ -13,6 +13,8 @@ from typing import Protocol
 import gymnasium as gym
 import numpy as np
 
+from ..active_slam_state import largest_free_component
+
 
 ACTION_LEFT = 0
 ACTION_RIGHT = 1
@@ -157,15 +159,22 @@ class GridSLAMBackend:
         predicted[2] = _wrap_angle(predicted[2])
         matched, score = self._scan_match(predicted, lidar_scan)
         self.belief.pose = matched
+        previously_observed = int(np.count_nonzero(self.belief.observed))
+        self._update_map(matched, lidar_scan)
+        new_cells = int(np.count_nonzero(self.belief.observed)) - previously_observed
         process_noise = np.diag([0.025, 0.025, 0.01]).astype(np.float32)
+        motion_scale = max(
+            0.1,
+            float(np.linalg.norm(odometry[:2])) + abs(float(odometry[2])) / np.pi,
+        )
         confidence = float(np.clip((score + 1.0) / 2.0, 0.05, 1.0))
-        self.belief.covariance = (
-            (self.belief.covariance + process_noise) * (1.0 - 0.35 * confidence)
-        ).astype(np.float32)
+        information_scale = min(1.0, new_cells / max(1, len(self.beam_angles)))
+        self.belief.covariance = self.belief.covariance + process_noise * motion_scale
+        if new_cells:
+            self.belief.covariance *= 1.0 - 0.35 * confidence * information_scale
         diagonal = np.clip(np.diag(self.belief.covariance), 1e-3, 2.0)
         self.belief.covariance = np.diag(diagonal).astype(np.float32)
         self.belief.scan_match_score = score
-        self._update_map(matched, lidar_scan)
         return self.belief
 
 
@@ -217,7 +226,13 @@ class MultiAgentSLAMEnv(gym.Env):
             shape=(self.n_agents, self.observation_dim),
             dtype=np.float32,
         )
-        self.observation_space = gym.spaces.Dict({"local": local_space, "critic": local_space})
+        critic_space = gym.spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(self.n_agents, self.observation_dim),
+            dtype=np.float32,
+        )
+        self.observation_space = gym.spaces.Dict({"local": local_space, "critic": critic_space})
         self.rng = np.random.default_rng(self.initial_seed)
         self.backends = [
             GridSLAMBackend(self.beam_angles, self.lidar_range) for _ in range(self.n_agents)
@@ -228,38 +243,8 @@ class MultiAgentSLAMEnv(gym.Env):
         self.step_count = 0
         self.collision_count = 0
         self.path_length = 0.0
+        self.new_observed_cells = 0
         self.last_metrics = {}
-
-    def _largest_free_component(self, grid: np.ndarray) -> np.ndarray:
-        free = ~grid
-        visited = np.zeros_like(free)
-        largest = []
-        height, width = grid.shape
-        for y in range(height):
-            for x in range(width):
-                if not free[y, x] or visited[y, x]:
-                    continue
-                stack = [(x, y)]
-                visited[y, x] = True
-                component = []
-                while stack:
-                    cx, cy = stack.pop()
-                    component.append((cx, cy))
-                    for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
-                        if (
-                            0 <= nx < width
-                            and 0 <= ny < height
-                            and free[ny, nx]
-                            and not visited[ny, nx]
-                        ):
-                            visited[ny, nx] = True
-                            stack.append((nx, ny))
-                if len(component) > len(largest):
-                    largest = component
-        mask = np.zeros_like(free)
-        for x, y in largest:
-            mask[y, x] = True
-        return mask
 
     def _generate_map(self) -> tuple[np.ndarray, np.ndarray]:
         grid = np.zeros((self.map_size, self.map_size), dtype=bool)
@@ -271,7 +256,7 @@ class MultiAgentSLAMEnv(gym.Env):
             x = int(self.rng.integers(2, self.map_size - width - 2))
             y = int(self.rng.integers(2, self.map_size - height - 2))
             grid[y : y + height, x : x + width] = True
-        reachable = self._largest_free_component(grid)
+        reachable = largest_free_component(grid)
         grid[~reachable] = True
         return grid, reachable
 
@@ -345,6 +330,7 @@ class MultiAgentSLAMEnv(gym.Env):
             patch = self._extract_patch(channels, belief.pose).transpose(1, 2, 0)
             observations.append(np.clip(patch.reshape(-1), -1.0, 1.0))
         local = np.stack(observations)
+        # Match MiniGrid: each critic partition receives one agent observation.
         return {"local": local, "critic": local.copy()}
 
     def _coverage(self) -> float:
@@ -406,6 +392,7 @@ class MultiAgentSLAMEnv(gym.Env):
         self.step_count = 0
         self.collision_count = 0
         self.path_length = 0.0
+        self.new_observed_cells = 0
         for index, backend in enumerate(self.backends):
             initial = self.true_poses[index].copy()
             initial[:2] += self.rng.normal(0.0, 0.05, 2)
@@ -420,6 +407,9 @@ class MultiAgentSLAMEnv(gym.Env):
         if not self.action_space.contains(actions):
             raise ValueError(f"invalid joint action {action}")
         previous_coverage = self._coverage()
+        _, previous_observed = self._fuse_beliefs(
+            [backend.belief for backend in self.backends]
+        )
         previous_logdet = self._total_logdet()
         odometry, collisions = self._execute_actions(actions)
         for index, backend in enumerate(self.backends):
@@ -427,7 +417,12 @@ class MultiAgentSLAMEnv(gym.Env):
         self.step_count += 1
         self.collision_count += collisions
         coverage = self._coverage()
+        _, current_observed = self._fuse_beliefs([backend.belief for backend in self.backends])
+        newly_observed = max(0, np.count_nonzero(current_observed) - np.count_nonzero(previous_observed))
+        self.new_observed_cells += int(newly_observed)
         uncertainty_reduction = float(np.clip(previous_logdet - self._total_logdet(), -1.0, 1.0))
+        if not newly_observed:
+            uncertainty_reduction = min(0.0, uncertainty_reduction)
         team_reward = (
             10.0 * (coverage - previous_coverage)
             + 0.5 * uncertainty_reduction
@@ -463,6 +458,7 @@ class MultiAgentSLAMEnv(gym.Env):
             "pose_rmse": float(np.sqrt(np.mean(np.square(position_errors)))),
             "collisions": float(self.collision_count),
             "path_length": float(self.path_length),
+            "new_observed_cells": float(self.new_observed_cells),
             "redundant_coverage": float(max(0.0, total_observed / union_observed - 1.0)),
             "pose_uncertainty": float(sum(np.trace(belief.covariance) for belief in beliefs)),
             "success": float(self._coverage() >= self.coverage_target),

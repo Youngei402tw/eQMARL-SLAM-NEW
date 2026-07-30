@@ -28,7 +28,7 @@ class TinyMultiAgentEnv(gym.Env):
         return self._observation(), np.ones(2, dtype=np.float32), False, truncated, {}
 
 
-def make_algorithm(alpha=0.01):
+def make_algorithm(alpha=0.01, **kwargs):
     actor = keras.Sequential(
         [keras.Input((3,)), keras.layers.Dense(2, activation="softmax")], name="actor"
     )
@@ -44,6 +44,7 @@ def make_algorithm(alpha=0.01):
         alpha=alpha,
         seed=9,
         reward_aggregation="mean",
+        **kwargs,
     )
 
 
@@ -54,6 +55,9 @@ def test_episode_preserves_truncation_and_updates_all_agents():
     assert np.array_equal(reward, [2.0, 2.0])
     assert transitions[-1].truncated
     assert np.isfinite(list(algorithm.last_losses.values())).all()
+    assert np.isclose(sum(
+        algorithm.episode_diagnostics[f"action_{index}_fraction"] for index in range(2)
+    ), 1.0)
 
 
 def test_entropy_reduces_minimized_actor_objective():
@@ -74,3 +78,13 @@ def test_td_target_is_detached_and_terminal_does_not_bootstrap():
         total = tf.reduce_sum(targets)
     assert tape.gradient(total, next_values) is None
     assert np.allclose(targets.numpy(), [[2.5], [1.0]])
+
+
+def test_advantage_normalization_and_entropy_decay():
+    values = MAA2C._normalize_advantage_tensor(tf.constant([[1.0], [2.0], [3.0]]))
+    assert np.isclose(tf.reduce_mean(values).numpy(), 0.0)
+    assert np.isclose(tf.math.reduce_std(values).numpy(), 1.0)
+    algorithm = make_algorithm(alpha=0.01, alpha_final=0.001, alpha_decay_episodes=100)
+    assert np.isclose(algorithm._entropy_alpha(0), 0.01)
+    assert np.isclose(algorithm._entropy_alpha(50), 0.0055)
+    assert np.isclose(algorithm._entropy_alpha(100), 0.001)

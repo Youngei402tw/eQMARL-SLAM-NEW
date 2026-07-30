@@ -182,6 +182,8 @@ class Algorithm:
         self.episode_reward_history = []
         self.episode_metrics_history = []
         total_steps = 0
+        self.stop_training = False
+        self.stop_reason = None
         
         # Callback train begin.
         callbacks.on_train_begin()
@@ -207,17 +209,22 @@ class Algorithm:
 
                     # Compute episode metrics.
                     self.episode_reward_history.append(episode_reward)
-                    if self.episode_metrics_callback is not None:
-                        episode_metrics = self.episode_metrics_callback(self.env)
+                    episode_metrics = (
+                        self.episode_metrics_callback(self.env)
+                        if self.episode_metrics_callback is not None else {}
+                    )
+                    episode_metrics.update(getattr(self, "episode_diagnostics", {}))
+                    if episode_metrics:
                         self.episode_metrics_history.append(episode_metrics)
-                    else:
-                        episode_metrics = {}
 
                     # Callback episode end.
                     callbacks.on_episode_end(episode)
 
                     tepisode.set_postfix(episode_reward=episode_reward, **episode_metrics)
                     tepisode.set_description(f"Episode {episode+1}") # Force next episode description.
+                    if self.stop_training:
+                        print(f"Stopping training: {self.stop_reason or 'callback request'}")
+                        break
 
         except KeyboardInterrupt:
             print(f"Terminating early at episode {episode}")

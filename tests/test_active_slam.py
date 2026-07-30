@@ -21,6 +21,9 @@ def test_reset_is_seeded_and_matches_declared_space():
     assert env.observation_space.contains(second)
     assert np.array_equal(env.action_space.nvec, [3, 3])
     assert second["local"].shape == (2, 7 * 7 * 3)
+    assert second["critic"].shape == (2, 147)
+    assert np.array_equal(second["local"], second["critic"])
+    assert not np.shares_memory(second["local"], second["critic"])
 
 
 def test_grid_slam_marks_free_and_occupied_cells():
@@ -31,6 +34,15 @@ def test_grid_slam_marks_free_and_occupied_cells():
     assert belief.occupancy_log_odds[5, 6] < 0.0
     assert belief.observed[5, 7]
     assert belief.occupancy_log_odds[5, 7] > 0.0
+
+
+def test_repeated_scan_without_new_cells_does_not_reduce_covariance():
+    backend = GridSLAMBackend(np.asarray([0.0]), max_range=4.0)
+    backend.reset(np.asarray([5.0, 5.0, 0.0]), (12, 12))
+    first = backend.update(np.zeros(3), np.asarray([2.0]))
+    first_trace = np.trace(first.covariance)
+    second = backend.update(np.zeros(3), np.asarray([2.0]))
+    assert np.trace(second.covariance) >= first_trace
 
 
 def test_step_returns_shared_reward_and_metrics():
@@ -45,7 +57,9 @@ def test_step_returns_shared_reward_and_metrics():
     assert rewards[0] == rewards[1]
     assert not terminated
     assert not truncated
-    assert {"coverage", "occupancy_iou", "pose_rmse", "success"} <= info.keys()
+    assert {
+        "coverage", "occupancy_iou", "pose_rmse", "success", "new_observed_cells"
+    } <= info.keys()
 
 
 def test_collision_is_counted():

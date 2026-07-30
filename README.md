@@ -87,8 +87,8 @@ The full list of experiments is as follows:
 
 The repository also includes a Gym-native two-robot active-SLAM research
 environment. A conventional scan-matching occupancy-grid backend estimates
-poses and maps; MAA2C only learns the robots' exploration actions. The four
-fixed actions are forward, turn left, turn right, and wait.
+poses and maps; MAA2C only learns the robots' three exploration actions: turn
+left, turn right, and move forward.
 
 The SLAM comparison configurations are:
 
@@ -99,16 +99,25 @@ The SLAM comparison configurations are:
 | `active_slam_maa2c_fctde.yml` | Fully centralized classical critic with early feature mixing. |
 | `active_slam_maa2c_sctde.yml` | Separated classical critic with late per-robot aggregation. |
 
-The four methods follow the MiniGrid comparison protocol. Every robot receives
-an ego-centric 7x7x3 belief image and chooses the same three relative actions
-(`left`, `right`, `forward`) used by MiniGrid. The methods share a 100-unit
-classical actor; quantum critics use per-agent locally connected input
-reduction and MiniGrid's four optimizer learning rates; classical critics use
-100-unit centralized or separated branches. Training uses MiniGrid's summed
-joint reward, gamma, entropy coefficient, and 1,000-episode full budget. Each
-configuration saves both actor and critic weights for held-out evaluation.
-Faithful runs are written under `experiment_output/active_slam_minigrid_*` so
-the visualization cannot silently mix them with results from older protocols.
+The four methods retain the MiniGrid actor and critic architectures. Every
+robot receives one ego-centric 7x7x3 belief image and chooses `left`, `right`,
+or `forward`; actors never receive privileged state. The critic receives the
+same two per-robot 147-feature observations. eQMARL, qfCTDE, fCTDE, and sCTDE
+therefore differ only in how their critic combines those two partitions. The
+stabilized training protocol uses normalized advantages, clipped gradients,
+mean shared reward, and entropy decay from 0.01 to 0.001. Quantum readout
+learning uses 0.01 rather than 0.1. Positive uncertainty reward requires newly
+observed cells, so repeating the same scan cannot reduce covariance
+indefinitely.
+
+MiniGrid-faithful runs are isolated under `active_slam_faithful_full_*`,
+`active_slam_faithful_pilot_*`, or `active_slam_faithful_fast_*`, so
+incompatible protocols and budgets cannot be averaged together. Every session
+name contains its seed, stores the resolved `config.yml`, checkpoints
+actor and critic weights every 100 episodes, and records action frequencies,
+entropy, losses, value/target statistics, and gradient norms. The visualization
+loader prefers faithful full results, then faithful pilot and fast results,
+and only then falls back to older stable or `active_slam_minigrid_*` results.
 
 TensorFlow Quantum requires the legacy Python 3.9 environment specified by
 this project. Build the reproducible container and run a configuration with:
@@ -139,11 +148,31 @@ beams, two quantum layers, and narrower networks. Pass
 `[rounds] [episodes] [max_steps]` to override its training budget. Fast runs
 must not be mixed with the full-size results in a final comparison.
 
-For PBS clusters using the Vanda-style module environment, submit the included
-[`train_vanda.pbs`](./train_vanda.pbs) job. Submit four independent one-seed
-jobs with `bash scripts/submit_vanda_four.sh`; pass `full` to use the full
-benchmark rather than the default fast preset. Forward an explicit budget with
-`SLAM_N_EPISODES=1000 bash scripts/submit_vanda_four.sh full`.
+For PBS clusters using the Vanda-style module environment, first submit the
+three-seed, four-framework pilot as 12 independent jobs:
+
+```bash
+bash scripts/submit_vanda_pilot.sh
+```
+
+The pilot defaults to 400 episodes, 250 steps, and seeds 0, 1, and 2. Override
+these without editing the script:
+
+```bash
+SLAM_PILOT_SEEDS="0 1 2" SLAM_N_EPISODES=400 SLAM_MAX_STEPS=250 \
+  bash scripts/submit_vanda_pilot.sh
+```
+
+Pilot jobs stop after sustained turn collapse or a large coverage regression.
+After a stable pilot, submit the five-seed full comparison as 20 jobs:
+
+```bash
+bash scripts/submit_vanda_full.sh
+```
+
+Override its seed list with `SLAM_FULL_SEEDS="0 1 2 3 4"`. For a single seed,
+use `SLAM_SEED=0 bash scripts/submit_vanda_four.sh full` instead.
+`train_vanda.pbs` accepts `SLAM_MODE=fast`, `pilot`, or `full`.
 
 Seeded non-learning baselines and the test suite can be run with:
 

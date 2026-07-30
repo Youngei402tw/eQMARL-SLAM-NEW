@@ -18,17 +18,37 @@ DEFAULT_METRICS = (
     "pose_rmse",
     "success",
     "collisions",
+    "path_length",
     "pose_uncertainty",
     "redundant_coverage",
+    "forward_action_fraction",
+    "policy_entropy",
+    "critic_loss",
+    "actor_gradient_norm",
+    "critic_gradient_norm",
 )
 
 
 def discover_metric_files(root: str | Path = "experiment_output") -> dict[str, list[Path]]:
-    """Find MiniGrid-faithful SLAM metrics grouped by framework."""
+    """Find the newest compatible SLAM protocol without mixing result families."""
     root = Path(root)
     groups = {}
-    for filepath in sorted(root.glob("active_slam_minigrid_*/*/metrics-*.json")):
-        framework = filepath.parents[1].name.removeprefix("active_slam_minigrid_")
+    protocols = (
+        "active_slam_faithful_full_",
+        "active_slam_faithful_pilot_",
+        "active_slam_faithful_fast_",
+        "active_slam_stable_full_",
+        "active_slam_stable_pilot_",
+        "active_slam_stable_",
+        "active_slam_minigrid_",
+    )
+    filepaths = []
+    for protocol in protocols:
+        filepaths = sorted(root.glob(f"{protocol}*/*/metrics-*.json"))
+        if filepaths:
+            break
+    for filepath in filepaths:
+        framework = filepath.parents[1].name.removeprefix(protocol)
         groups.setdefault(framework, []).append(filepath)
     return groups
 
