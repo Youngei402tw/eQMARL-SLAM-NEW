@@ -85,6 +85,9 @@ The full list of experiments is as follows:
 
 ### Active multi-robot SLAM
 
+For the protected faithful baseline, pilot results, interpretation, and next
+session instructions, read [`ACTIVE_SLAM_HANDOFF.md`](./ACTIVE_SLAM_HANDOFF.md).
+
 The repository also includes a Gym-native two-robot active-SLAM research
 environment. A conventional scan-matching occupancy-grid backend estimates
 poses and maps; MAA2C only learns the robots' three exploration actions: turn

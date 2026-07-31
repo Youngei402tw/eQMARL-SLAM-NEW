@@ -1,3 +1,5 @@
+import inspect
+
 import numpy as np
 
 from eqmarl.environments.active_slam import (
@@ -8,6 +10,25 @@ from eqmarl.environments.active_slam import (
     MultiAgentSLAMEnv,
 )
 from eqmarl.policies import FrontierJointPolicy
+
+
+def test_faithful_environment_defaults_are_locked():
+    parameters = inspect.signature(MultiAgentSLAMEnv).parameters
+    expected = {
+        "map_size": 24,
+        "n_agents": 2,
+        "n_beams": 36,
+        "lidar_range": 8.0,
+        "patch_size": 7,
+        "time_limit": 250,
+        "coverage_target": 0.9,
+        "obstacle_rectangles": 9,
+        "lidar_noise": 0.03,
+        "odometry_translation_noise": 0.04,
+        "odometry_rotation_noise": 0.015,
+        "seed": 0,
+    }
+    assert {name: parameters[name].default for name in expected} == expected
 
 
 def test_reset_is_seeded_and_matches_declared_space():

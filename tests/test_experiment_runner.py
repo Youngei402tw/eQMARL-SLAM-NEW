@@ -116,13 +116,23 @@ def test_active_slam_configs_follow_four_method_minigrid_protocol():
             "experiment_output/active_slam_faithful_full_"
         )
         assert experiment["train"]["n_episodes"] == 1000
+        assert experiment["train"]["max_steps_per_episode"] == 250
+        assert [item["params"]["save_freq"] for item in experiment["train"]["callbacks"]] == [100, 100, 100]
+        assert params["gamma"] == 0.99
         assert params["reward_aggregation"] == "mean"
         assert params["normalize_advantages"] is True
         assert params["gradient_clip_norm"] == 1.0
         assert params["alpha"] == 0.01
         assert params["alpha_final"] == 0.001
-        assert params["env"]["params"]["patch_size"] == 7
-        assert "critic_map_size" not in params["env"]["params"]
+        assert params["alpha_decay_episodes"] == 500
+        assert params["env"]["params"] == {
+            "map_size": 24,
+            "n_agents": 2,
+            "n_beams": 36,
+            "patch_size": 7,
+            "time_limit": 250,
+            "seed": 0,
+        }
         assert actor["init_func"] == "eqmarl.active_slam_models.generate_actor_classical"
         assert actor["init_params"]["observation_dim"] == 147
         assert actor["init_params"]["n_actions"] == 3
@@ -138,8 +148,15 @@ def test_active_slam_configs_follow_four_method_minigrid_protocol():
         framework = path.stem.removeprefix("active_slam_maa2c_")
         critic_optimizer = params["optimizer_critic"]
         if framework in {"eqmarl_psi+", "qfctde"}:
+            assert critic["init_params"]["d_qubits"] == 4
+            assert critic["init_params"]["n_layers"] == 5
+            assert critic["init_params"]["nn_activation"] == "linear"
+            assert critic["init_params"]["trainable_w_enc"] is False
             assert [item["params"]["learning_rate"] for item in critic_optimizer] == [
                 0.001, 0.001, 0.01, 0.01
             ]
+            if framework == "eqmarl_psi+":
+                assert critic["init_params"]["input_entanglement_type"] == "psi+"
         else:
+            assert critic["init_params"]["units"] == [100]
             assert critic_optimizer["params"]["learning_rate"] == 0.0001
