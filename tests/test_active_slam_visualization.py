@@ -1,6 +1,7 @@
 """Regression coverage for active-SLAM plotting and metric readers."""
 
 import json
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,6 +16,16 @@ from eqmarl.active_slam_visualization import (
 )
 from eqmarl.environments.active_slam import MultiAgentSLAMEnv
 from eqmarl.policies import FrontierJointPolicy
+
+
+def test_notebook_learned_rollout_uses_bounded_slam_pose():
+    notebook_path = Path(__file__).parents[1] / "experiments" / "active_slam_visualization.ipynb"
+    notebook = json.loads(notebook_path.read_text())
+    source = "\n".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"]
+    )
+    assert "LearnedJointPolicy(actor)" in source
+    assert "MultiAgentSLAMEnv(map_size=24, time_limit=250, bounded_slam_pose=True)" in source
 
 
 def test_metric_loading_summary_and_plots(tmp_path):
@@ -63,6 +74,17 @@ def test_faithful_metrics_take_precedence_over_previous_protocols(tmp_path):
 
 def test_faithful_full_metrics_take_precedence_over_faithful_pilot(tmp_path):
     for protocol, reward in (("faithful_pilot", 1.0), ("faithful_full", 2.0)):
+        output = tmp_path / f"active_slam_{protocol}_fctde" / "run"
+        output.mkdir(parents=True)
+        (output / "metrics-0.json").write_text(json.dumps({
+            "reward": [[reward, reward]], "metrics": {"coverage": [0.5]}
+        }))
+    groups = discover_metric_files(tmp_path)
+    assert load_metrics(groups)["team_reward"].tolist() == [2.0]
+
+
+def test_bounded_pose_metrics_take_precedence_after_reevaluation(tmp_path):
+    for protocol, reward in (("faithful_full", 1.0), ("bounded_pose_full", 2.0)):
         output = tmp_path / f"active_slam_{protocol}_fctde" / "run"
         output.mkdir(parents=True)
         (output / "metrics-0.json").write_text(json.dumps({

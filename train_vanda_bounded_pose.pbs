@@ -1,0 +1,87 @@
+#!/bin/bash
+#PBS -N eqmarl-slam-bounded
+#PBS -l select=1:ncpus=8:mem=32gb:ngpus=1
+#PBS -l walltime=64:00:00
+#PBS -j oe
+
+# One-framework, one-seed bounded-pose Active-SLAM training on Vanda.
+
+set -euo pipefail
+
+cd "$PBS_O_WORKDIR"
+echo "Working directory: $(pwd)"
+echo "Job ID: $PBS_JOBID"
+echo "Node: $(hostname)"
+echo "Start time: $(date)"
+echo ""
+
+SLAM_MODE="${SLAM_MODE:-pilot}"
+SLAM_FRAMEWORK="${SLAM_FRAMEWORK:-}"
+SLAM_SEED="${SLAM_SEED:-0}"
+
+if [[ "$SLAM_MODE" != "pilot" && "$SLAM_MODE" != "full" ]]; then
+    echo "SLAM_MODE must be pilot or full, got: $SLAM_MODE" >&2
+    exit 2
+fi
+case "$SLAM_FRAMEWORK" in
+    eqmarl_psi+|qfctde|fctde|sctde) ;;
+    *)
+        echo "Set SLAM_FRAMEWORK to eqmarl_psi+, qfctde, fctde, or sctde." >&2
+        exit 2
+        ;;
+esac
+if [[ ! "$SLAM_SEED" =~ ^[0-9]+$ ]]; then
+    echo "SLAM_SEED must be a non-negative integer, got: $SLAM_SEED" >&2
+    exit 2
+fi
+
+if [[ "$SLAM_MODE" == "pilot" ]]; then
+    SLAM_N_EPISODES="${SLAM_N_EPISODES:-400}"
+else
+    SLAM_N_EPISODES="${SLAM_N_EPISODES:-1000}"
+fi
+SLAM_MAX_STEPS="${SLAM_MAX_STEPS:-250}"
+
+echo "Protocol: bounded pose | Mode: $SLAM_MODE"
+echo "Framework: $SLAM_FRAMEWORK | Seed: $SLAM_SEED"
+echo "Episodes: $SLAM_N_EPISODES | Steps: $SLAM_MAX_STEPS"
+echo ""
+
+module load Miniconda3
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate eQMARL_SLAM
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+export TF_FORCE_GPU_ALLOW_GROWTH="${TF_FORCE_GPU_ALLOW_GROWTH:-true}"
+echo "Conda env: $CONDA_DEFAULT_ENV"
+echo "Python: $(python --version)"
+python -c "import cirq, eqmarl, gymnasium, tensorflow_quantum; print('eQMARL:', eqmarl.__file__)"
+echo ""
+
+echo "--- GPU Info ---"
+nvidia-smi
+python -c "import tensorflow as tf; assert tf.config.list_physical_devices('GPU'), 'no GPU visible to TensorFlow'"
+echo ""
+
+config="experiments/active_slam_bounded_pose_${SLAM_FRAMEWORK}.yml"
+if [[ ! -f "$config" ]]; then
+    echo "Experiment config not found: $config" >&2
+    exit 2
+fi
+args=("$config" -r 1 --n-episodes "$SLAM_N_EPISODES"
+    --max-steps-per-episode "$SLAM_MAX_STEPS" --seed "$SLAM_SEED")
+if [[ "$SLAM_MODE" == "pilot" ]]; then
+    args+=(--pilot)
+fi
+
+echo "==========================================="
+echo "Starting bounded-pose $SLAM_FRAMEWORK"
+echo "==========================================="
+python scripts/experiment_runner.py "${args[@]}" 2>&1 | tee "training-bounded-${SLAM_FRAMEWORK}-seed${SLAM_SEED}-${PBS_JOBID}.log"
+
+echo ""
+echo "==========================================="
+echo "Training complete!"
+echo "End time: $(date)"
+echo "Results: experiment_output/active_slam_bounded_pose_${SLAM_MODE}_${SLAM_FRAMEWORK}/"
+echo "==========================================="

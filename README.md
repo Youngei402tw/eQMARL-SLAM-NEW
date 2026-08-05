@@ -119,7 +119,7 @@ incompatible protocols and budgets cannot be averaged together. Every session
 name contains its seed, stores the resolved `config.yml`, checkpoints
 actor and critic weights every 100 episodes, and records action frequencies,
 entropy, losses, value/target statistics, and gradient norms. The visualization
-loader prefers faithful full results, then faithful pilot and fast results,
+loader prefers bounded-pose results after reevaluation, then faithful results,
 and only then falls back to older stable or `active_slam_minigrid_*` results.
 
 TensorFlow Quantum requires the legacy Python 3.9 environment specified by
@@ -176,6 +176,23 @@ bash scripts/submit_vanda_full.sh
 Override its seed list with `SLAM_FULL_SEEDS="0 1 2 3 4"`. For a single seed,
 use `SLAM_SEED=0 bash scripts/submit_vanda_four.sh full` instead.
 `train_vanda.pbs` accepts `SLAM_MODE=fast`, `pilot`, or `full`.
+
+The bounded-pose backend improvement has separate configs, output roots, and
+PBS entry points. Validate it on seeds 0-2, then run the held-out seeds 8-12:
+
+```bash
+bash scripts/submit_vanda_bounded_pose.sh pilot
+bash scripts/submit_vanda_bounded_pose.sh full
+```
+
+Override those lists with `SLAM_BOUNDED_PILOT_SEEDS` or
+`SLAM_BOUNDED_FULL_SEEDS`. These jobs use `train_vanda_bounded_pose.pbs` and
+write under `experiment_output/active_slam_bounded_pose_{pilot,full}_*`.
+Audit the completed final jobs with:
+
+```bash
+python scripts/analyze_active_slam_full.py --protocol bounded_pose
+```
 
 Seeded non-learning baselines and the test suite can be run with:
 

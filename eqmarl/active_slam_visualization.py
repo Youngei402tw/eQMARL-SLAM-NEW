@@ -34,6 +34,8 @@ def discover_metric_files(root: str | Path = "experiment_output") -> dict[str, l
     root = Path(root)
     groups = {}
     protocols = (
+        "active_slam_bounded_pose_full_",
+        "active_slam_bounded_pose_pilot_",
         "active_slam_faithful_full_",
         "active_slam_faithful_pilot_",
         "active_slam_faithful_fast_",

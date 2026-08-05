@@ -31,7 +31,7 @@ REQUIRED_SERIES = (
 )
 
 
-def _config(framework, seed):
+def _config(framework, seed, protocol="faithful"):
     critic = {
         "observation_dim": 147,
         "n_agents": 2,
@@ -62,7 +62,7 @@ def _config(framework, seed):
     return {
         "experiment": {
             "roots": {
-                "root_dir": f"experiment_output/active_slam_faithful_full_{framework}"
+                "root_dir": f"experiment_output/active_slam_{protocol}_full_{framework}"
             },
             "train": {
                 "n_episodes": 1000,
@@ -133,10 +133,16 @@ def _config(framework, seed):
     }
 
 
-def _write_run(root, framework, seed, episodes=EXPECTED_EPISODES):
-    session = root / f"active_slam_faithful_full_{framework}" / f"run-seed{seed}"
+def _write_run(
+    root, framework, seed, episodes=EXPECTED_EPISODES, protocol="faithful"
+):
+    session = root / f"active_slam_{protocol}_full_{framework}" / f"run-seed{seed}"
     session.mkdir(parents=True)
-    (session / "config.yml").write_text(yaml.safe_dump(_config(framework, seed)))
+    config = _config(framework, seed, protocol)
+    if protocol == "bounded_pose":
+        env_params = config["experiment"]["algorithm"]["init_params"]["env"]["params"]
+        env_params["bounded_slam_pose"] = True
+    (session / "config.yml").write_text(yaml.safe_dump(config))
     offset = FRAMEWORKS.index(framework) * 0.1 + seed * 0.01
     values = [offset + episode * 0.001 for episode in range(episodes)]
     metrics = {name: values for name in REQUIRED_SERIES}
@@ -163,6 +169,16 @@ def test_audit_computes_paired_full_horizon_statistics(tmp_path):
     assert stability["mean"] == pytest.approx(0.6)
     comparison = report["final_eqmarl_minus_qfctde"]["coverage"]
     assert comparison["mean"] == pytest.approx(-0.1)
+
+
+def test_audit_accepts_isolated_bounded_pose_protocol(tmp_path):
+    for framework in FRAMEWORKS:
+        _write_run(tmp_path, framework, 8, protocol="bounded_pose")
+
+    report = analyze_faithful_full(tmp_path, seeds=(8,), protocol="bounded_pose")
+
+    assert report["protocol"] == "active_slam_bounded_pose_full"
+    assert report["seeds"] == [8]
 
 
 def test_audit_rejects_partial_checkpoint(tmp_path):

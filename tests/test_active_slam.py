@@ -94,6 +94,53 @@ def test_collision_is_counted():
     assert info["collisions"] >= 1.0
 
 
+def test_out_of_bounds_physical_motion_is_a_collision():
+    env = MultiAgentSLAMEnv(
+        map_size=18,
+        odometry_translation_noise=0.0,
+        odometry_rotation_noise=0.0,
+        seed=11,
+    )
+    env.reset(seed=11)
+    env.ground_truth[:] = False
+    cases = (
+        np.asarray([0.0, 5.0, np.pi], dtype=np.float32),
+        np.asarray([17.0, 5.0, 0.0], dtype=np.float32),
+    )
+    for pose in cases:
+        env.true_poses = np.stack(
+            [pose, np.asarray([10.0, 10.0, 0.0], dtype=np.float32)]
+        )
+        old_pose = env.true_poses[0].copy()
+        _, collisions = env._execute_actions([ACTION_FORWARD, ACTION_LEFT])
+        assert collisions == 1
+        assert np.array_equal(env.true_poses[0], old_pose)
+
+
+def test_bounded_grid_slam_rejects_out_of_map_pose_estimates():
+    backend = GridSLAMBackend(
+        np.asarray([0.0]), max_range=4.0, constrain_pose_to_map=True
+    )
+    backend.reset(np.asarray([5.0, 5.0, 0.0]), (12, 12))
+    belief = backend.update(np.asarray([-50.0, 50.0, 0.0]), np.asarray([4.0]))
+    assert 0.0 <= belief.pose[0] <= 11.0
+    assert 0.0 <= belief.pose[1] <= 11.0
+
+
+def test_unbounded_grid_slam_preserves_faithful_pose_behavior():
+    backend = GridSLAMBackend(np.asarray([0.0]), max_range=4.0)
+    backend.reset(np.asarray([5.0, 5.0, 0.0]), (12, 12))
+    belief = backend.update(np.asarray([-50.0, 0.0, 0.0]), np.asarray([4.0]))
+    assert belief.pose[0] < 0.0
+
+
+def test_bounded_slam_pose_option_configures_every_backend():
+    faithful = MultiAgentSLAMEnv(map_size=18)
+    improved = MultiAgentSLAMEnv(map_size=18, bounded_slam_pose=True)
+    assert all(not backend.constrain_pose_to_map for backend in faithful.backends)
+    assert all(backend.constrain_pose_to_map for backend in improved.backends)
+
+
 def test_actions_match_minigrid_left_right_forward_order():
     env = MultiAgentSLAMEnv(map_size=18, seed=5)
     pose = np.asarray([5.0, 5.0, 0.0], dtype=np.float32)

@@ -1,3 +1,4 @@
+import copy
 import os
 import pytest
 from pathlib import Path
@@ -77,6 +78,14 @@ def test_output_protocol_rewrites_all_active_slam_paths():
     apply_output_protocol(config, "pilot")
     assert "faithful_pilot" in config["experiment"]["roots"]["root_dir"]
     assert "faithful_pilot" in config["experiment"]["save"]["metrics_file"]
+
+    bounded = {"experiment": {
+        "roots": {"root_dir": "experiment_output/active_slam_bounded_pose_full_fctde"},
+        "save": {"metrics_file": "active_slam_bounded_pose_full_fctde/metrics.json"},
+    }}
+    apply_output_protocol(bounded, "pilot")
+    assert "bounded_pose_pilot" in bounded["experiment"]["roots"]["root_dir"]
+    assert "bounded_pose_pilot" in bounded["experiment"]["save"]["metrics_file"]
 
 
 def test_fast_preset_reduces_active_slam_dimensions_and_budget():
@@ -160,3 +169,29 @@ def test_active_slam_configs_follow_four_method_minigrid_protocol():
         else:
             assert critic["init_params"]["units"] == [100]
             assert critic_optimizer["params"]["learning_rate"] == 0.0001
+
+
+def test_bounded_pose_configs_change_only_output_paths_and_pose_constraint():
+    experiment_dir = Path(__file__).parents[1] / "experiments"
+    frameworks = ("eqmarl_psi+", "qfctde", "fctde", "sctde")
+
+    def replace_output_namespace(value):
+        if isinstance(value, dict):
+            return {key: replace_output_namespace(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [replace_output_namespace(item) for item in value]
+        if isinstance(value, str):
+            return value.replace(
+                "active_slam_faithful_full_", "active_slam_bounded_pose_full_"
+            )
+        return value
+
+    for framework in frameworks:
+        faithful_path = experiment_dir / f"active_slam_maa2c_{framework}.yml"
+        bounded_path = experiment_dir / f"active_slam_bounded_pose_{framework}.yml"
+        faithful = yaml.load(faithful_path.read_text(), Loader=eqmarl.yaml.ConfigLoader)
+        bounded = yaml.load(bounded_path.read_text(), Loader=eqmarl.yaml.ConfigLoader)
+        expected = replace_output_namespace(copy.deepcopy(faithful))
+        env_params = expected["experiment"]["algorithm"]["init_params"]["env"]["params"]
+        env_params["bounded_slam_pose"] = True
+        assert bounded == expected

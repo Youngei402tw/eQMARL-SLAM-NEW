@@ -1,4 +1,4 @@
-"""Audit and summarize the faithful 1,000-episode Active-SLAM comparison."""
+"""Audit and summarize a 1,000-episode Active-SLAM comparison."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import yaml
 
 FRAMEWORKS = ("eqmarl_psi+", "qfctde", "fctde", "sctde")
 DEFAULT_SEEDS = (3, 4, 5, 6, 7)
+BOUNDED_POSE_DEFAULT_SEEDS = (8, 9, 10, 11, 12)
 EXPECTED_EPISODES = 1000
 WINDOWS = {
     "pilot_end": (300, 400),
@@ -59,11 +60,20 @@ def _get(config: dict, dotted_path: str):
     return value
 
 
-def _expected_config(framework: str, seed: int) -> dict[str, object]:
+def _protocol_prefix(protocol: str) -> str:
+    if protocol not in {"faithful", "bounded_pose"}:
+        raise ProtocolError(f"unsupported protocol: {protocol}")
+    return f"active_slam_{protocol}_full"
+
+
+def _expected_config(
+    framework: str, seed: int, protocol: str = "faithful"
+) -> dict[str, object]:
     critic_name = "eqmarl" if framework == "eqmarl_psi+" else framework
+    prefix = _protocol_prefix(protocol)
     expected = {
         "experiment.roots.root_dir": (
-            f"experiment_output/active_slam_faithful_full_{framework}"
+            f"experiment_output/{prefix}_{framework}"
         ),
         "experiment.train.n_episodes": EXPECTED_EPISODES,
         "experiment.train.max_steps_per_episode": 250,
@@ -104,6 +114,10 @@ def _expected_config(framework: str, seed: int) -> dict[str, object]:
         "experiment.algorithm.init_params.model_critic.init_params.n_actions": 3,
         "experiment.algorithm.init_params.model_critic.build_shape": [None, 2, 147],
     }
+    if protocol == "bounded_pose":
+        expected[
+            "experiment.algorithm.init_params.env.params.bounded_slam_pose"
+        ] = True
     critic = "experiment.algorithm.init_params.model_critic.init_params"
     optimizer = "experiment.algorithm.init_params.optimizer_critic"
     if framework in {"eqmarl_psi+", "qfctde"}:
@@ -130,9 +144,15 @@ def _expected_config(framework: str, seed: int) -> dict[str, object]:
     return expected
 
 
-def _validate_config(config: dict, framework: str, seed: int, path: Path) -> None:
+def _validate_config(
+    config: dict,
+    framework: str,
+    seed: int,
+    path: Path,
+    protocol: str = "faithful",
+) -> None:
     violations = []
-    for dotted_path, expected in _expected_config(framework, seed).items():
+    for dotted_path, expected in _expected_config(framework, seed, protocol).items():
         try:
             actual = _get(config, dotted_path)
         except (KeyError, TypeError):
@@ -159,7 +179,9 @@ def _validate_config(config: dict, framework: str, seed: int, path: Path) -> Non
         raise ProtocolError(f"{path}: " + "; ".join(violations))
 
 
-def _load_run(framework: str, session_dir: Path) -> FullRun:
+def _load_run(
+    framework: str, session_dir: Path, protocol: str = "faithful"
+) -> FullRun:
     match = re.search(r"-seed([0-9]+)$", session_dir.name)
     if not match:
         raise ProtocolError(f"invalid full-run directory name: {session_dir}")
@@ -175,7 +197,7 @@ def _load_run(framework: str, session_dir: Path) -> FullRun:
 
     with config_path.open() as config_file:
         config = yaml.safe_load(config_file)
-    _validate_config(config, framework, seed, config_path)
+    _validate_config(config, framework, seed, config_path, protocol)
 
     with metrics_paths[0].open() as metrics_file:
         payload = json.load(metrics_file)
@@ -217,9 +239,12 @@ def _load_run(framework: str, session_dir: Path) -> FullRun:
 def load_faithful_full_runs(
     root: Path | str = "experiment_output",
     seeds: Iterable[int] = DEFAULT_SEEDS,
+    protocol: str = "faithful",
 ) -> dict[tuple[str, int], FullRun]:
-    """Load exactly one complete faithful full run per method and expected seed."""
+    """Load exactly one complete full run per method and expected seed."""
     root = Path(root)
+    prefix = _protocol_prefix(protocol)
+    protocol_label = protocol.replace("_", " ")
     expected_seeds = tuple(int(seed) for seed in seeds)
     if len(set(expected_seeds)) != len(expected_seeds) or any(
         seed < 0 for seed in expected_seeds
@@ -228,11 +253,13 @@ def load_faithful_full_runs(
 
     runs = {}
     for framework in FRAMEWORKS:
-        framework_root = root / f"active_slam_faithful_full_{framework}"
+        framework_root = root / f"{prefix}_{framework}"
         if not framework_root.is_dir():
-            raise ProtocolError(f"missing faithful full directory: {framework_root}")
+            raise ProtocolError(
+                f"missing {protocol_label} full directory: {framework_root}"
+            )
         for session_dir in sorted(path for path in framework_root.iterdir() if path.is_dir()):
-            run = _load_run(framework, session_dir)
+            run = _load_run(framework, session_dir, protocol)
             if run.seed not in expected_seeds:
                 raise ProtocolError(
                     f"{session_dir}: unexpected seed {run.seed}; expected {expected_seeds}"
@@ -240,7 +267,7 @@ def load_faithful_full_runs(
             key = (framework, run.seed)
             if key in runs:
                 raise ProtocolError(
-                    f"duplicate faithful full run for {framework} seed {run.seed}: "
+                    f"duplicate {protocol_label} full run for {framework} seed {run.seed}: "
                     f"{runs[key].session_dir} and {session_dir}"
                 )
             runs[key] = run
@@ -252,7 +279,9 @@ def load_faithful_full_runs(
         if (framework, seed) not in runs
     ]
     if missing:
-        raise ProtocolError(f"missing faithful full runs: {', '.join(missing)}")
+        raise ProtocolError(
+            f"missing {protocol_label} full runs: {', '.join(missing)}"
+        )
     return runs
 
 
@@ -276,10 +305,11 @@ def _estimate(values_by_seed: dict[int, float]) -> dict:
 def analyze_faithful_full(
     root: Path | str = "experiment_output",
     seeds: Iterable[int] = DEFAULT_SEEDS,
+    protocol: str = "faithful",
 ) -> dict:
     """Audit full runs and calculate paired window and framework statistics."""
     seeds = tuple(int(seed) for seed in seeds)
-    runs = load_faithful_full_runs(root, seeds)
+    runs = load_faithful_full_runs(root, seeds, protocol)
     per_window = {}
     for window, (start, stop) in WINDOWS.items():
         per_window[window] = {
@@ -323,7 +353,7 @@ def analyze_faithful_full(
         for metric in REPORT_METRICS
     }
     return {
-        "protocol": "active_slam_faithful_full",
+        "protocol": _protocol_prefix(protocol),
         "episodes": EXPECTED_EPISODES,
         "seeds": list(seeds),
         "frameworks": list(FRAMEWORKS),
@@ -340,7 +370,8 @@ def _format_estimate(estimate: dict, scale: float = 1.0) -> str:
 
 def print_summary(report: dict) -> None:
     print(
-        f"Validated {len(report['frameworks']) * len(report['seeds'])} faithful full runs "
+        f"Validated {len(report['frameworks']) * len(report['seeds'])} "
+        f"{report['protocol']} runs "
         f"for seeds {report['seeds']}."
     )
     print("\nFinal 100 episodes (mean +/- 95% t-CI across seeds)")
@@ -384,11 +415,21 @@ def print_summary(report: dict) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path("experiment_output"))
-    parser.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_SEEDS))
+    parser.add_argument(
+        "--protocol", choices=("faithful", "bounded_pose"), default="faithful"
+    )
+    parser.add_argument("--seeds", type=int, nargs="+")
     parser.add_argument("--output", type=Path, help="Optional JSON report path")
     args = parser.parse_args()
+    seeds = args.seeds
+    if seeds is None:
+        seeds = (
+            BOUNDED_POSE_DEFAULT_SEEDS
+            if args.protocol == "bounded_pose"
+            else DEFAULT_SEEDS
+        )
     try:
-        report = analyze_faithful_full(args.root, args.seeds)
+        report = analyze_faithful_full(args.root, seeds, args.protocol)
     except ProtocolError as error:
         parser.error(str(error))
     print_summary(report)
