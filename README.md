@@ -188,11 +188,10 @@ bash scripts/submit_vanda_bounded_pose.sh full
 Override those lists with `SLAM_BOUNDED_PILOT_SEEDS` or
 `SLAM_BOUNDED_FULL_SEEDS`. These jobs use `train_vanda_bounded_pose.pbs` and
 write under `experiment_output/active_slam_bounded_pose_{pilot,full}_*`.
-Audit the completed final jobs with:
-
-```bash
-python scripts/analyze_active_slam_full.py --protocol bounded_pose
-```
+The cluster only performs training. After migrating all result directories to
+the local `experiment_output/` directory, run the complete bounded-pose audit
+cell in `experiments/active_slam_visualization.ipynb` to validate and summarize
+the four-method comparison on seeds 8-12.
 
 Seeded non-learning baselines and the test suite can be run with:
 

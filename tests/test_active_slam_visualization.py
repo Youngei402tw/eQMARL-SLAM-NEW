@@ -26,6 +26,9 @@ def test_notebook_learned_rollout_uses_bounded_slam_pose():
     )
     assert "LearnedJointPolicy(actor)" in source
     assert "MultiAgentSLAMEnv(map_size=24, time_limit=250, bounded_slam_pose=True)" in source
+    assert "analyze_active_slam_full" in source
+    assert "protocol='bounded_pose'" in source
+    assert "seeds=(8, 9, 10, 11, 12)" in source
 
 
 def test_metric_loading_summary_and_plots(tmp_path):

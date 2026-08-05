@@ -302,7 +302,7 @@ def _estimate(values_by_seed: dict[int, float]) -> dict:
     }
 
 
-def analyze_faithful_full(
+def analyze_active_slam_full(
     root: Path | str = "experiment_output",
     seeds: Iterable[int] = DEFAULT_SEEDS,
     protocol: str = "faithful",
@@ -362,6 +362,15 @@ def analyze_faithful_full(
         "stability_final_minus_pilot_end": stability,
         "final_eqmarl_minus_qfctde": eqmarl_minus_qfctde,
     }
+
+
+def analyze_faithful_full(
+    root: Path | str = "experiment_output",
+    seeds: Iterable[int] = DEFAULT_SEEDS,
+    protocol: str = "faithful",
+) -> dict:
+    """Backward-compatible alias for :func:`analyze_active_slam_full`."""
+    return analyze_active_slam_full(root, seeds, protocol)
 
 
 def _format_estimate(estimate: dict, scale: float = 1.0) -> str:
@@ -429,7 +438,7 @@ def main() -> None:
             else DEFAULT_SEEDS
         )
     try:
-        report = analyze_faithful_full(args.root, seeds, args.protocol)
+        report = analyze_active_slam_full(args.root, seeds, args.protocol)
     except ProtocolError as error:
         parser.error(str(error))
     print_summary(report)
