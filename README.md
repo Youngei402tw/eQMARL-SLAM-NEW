@@ -188,6 +188,12 @@ bash scripts/submit_vanda_bounded_pose.sh full
 Override those lists with `SLAM_BOUNDED_PILOT_SEEDS` or
 `SLAM_BOUNDED_FULL_SEEDS`. These jobs use `train_vanda_bounded_pose.pbs` and
 write under `experiment_output/active_slam_bounded_pose_{pilot,full}_*`.
+The submission wrapper releases user holds on existing `slam-bp-*` jobs before
+submitting, then starts a detached monitor that retries releases while those
+jobs remain queued, running, or held. It writes a monitor log beside the
+repository; set `SLAM_HOLD_POLL_SECONDS=120` to change its polling interval or
+`SLAM_MONITOR_HELD=0` to disable it. Unrelated jobs and system/admin holds are
+left untouched.
 The cluster only performs training. After migrating all result directories to
 the local `experiment_output/` directory, run the complete bounded-pose audit
 cell in `experiments/active_slam_visualization.ipynb` to validate and summarize
