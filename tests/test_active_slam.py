@@ -81,6 +81,77 @@ def test_step_returns_shared_reward_and_metrics():
     assert {
         "coverage", "occupancy_iou", "pose_rmse", "success", "new_observed_cells"
     } <= info.keys()
+    assert info["step_reward_components"].keys() == {
+        "coverage_reward",
+        "uncertainty_reward",
+        "milestone_reward",
+        "collision_penalty",
+        "step_penalty",
+    }
+
+
+def test_milestone_rewards_are_progressive_and_paid_once():
+    env = MultiAgentSLAMEnv(
+        map_size=18,
+        coverage_target=0.99,
+        coverage_milestones={0.90: 0.5, 0.95: 1.0, 0.98: 2.0, 0.99: 5.0},
+    )
+
+    assert env._milestone_reward(0.89, 0.90) == 0.5
+    assert env._milestone_reward(0.94, 0.99) == 8.0
+    assert env._milestone_reward(0.99, 0.99) == 0.0
+    assert env._milestone_metric_name(0.98) == "steps_to_coverage_98"
+
+
+def test_milestone_configuration_rejects_unreachable_or_negative_rewards():
+    with np.testing.assert_raises_regex(ValueError, "no greater than coverage_target"):
+        MultiAgentSLAMEnv(
+            coverage_target=0.95, coverage_milestones={0.99: 5.0}
+        )
+    with np.testing.assert_raises_regex(ValueError, "non-negative"):
+        MultiAgentSLAMEnv(
+            coverage_target=0.99, coverage_milestones={0.99: -1.0}
+        )
+
+
+def test_crossing_final_milestone_pays_jackpot_and_terminates():
+    env = MultiAgentSLAMEnv(
+        map_size=18,
+        time_limit=250,
+        coverage_target=0.99,
+        coverage_milestones={0.90: 0.5, 0.95: 1.0, 0.98: 2.0, 0.99: 5.0},
+        seed=4,
+    )
+    env.reset(seed=4)
+    coverages = iter((0.89, 0.99, 0.99, 0.99))
+    env._coverage = lambda: next(coverages)
+
+    _, _, terminated, truncated, info = env.step([ACTION_LEFT, ACTION_RIGHT])
+
+    assert terminated
+    assert not truncated
+    assert info["step_reward_components"]["milestone_reward"] == 8.5
+    assert info["milestone_reward"] == 8.5
+    assert info["steps_to_coverage_90"] == 1.0
+    assert info["steps_to_coverage_99"] == 1.0
+
+
+def test_reward_component_totals_reconstruct_episode_return():
+    env = MultiAgentSLAMEnv(map_size=18, time_limit=2, seed=4)
+    env.reset(seed=4)
+    episode_return = 0.0
+    for _ in range(2):
+        _, rewards, _, _, _ = env.step([ACTION_LEFT, ACTION_RIGHT])
+        episode_return += float(rewards[0])
+    metrics = env.episode_metrics()
+    reconstructed = (
+        metrics["coverage_reward"]
+        + metrics["uncertainty_reward"]
+        + metrics["milestone_reward"]
+        - metrics["collision_penalty"]
+        - metrics["step_penalty"]
+    )
+    np.testing.assert_allclose(reconstructed, episode_return, atol=1e-6)
 
 
 def test_collision_is_counted():

@@ -26,6 +26,11 @@ DEFAULT_METRICS = (
     "critic_loss",
     "actor_gradient_norm",
     "critic_gradient_norm",
+    "coverage_reward",
+    "uncertainty_reward",
+    "milestone_reward",
+    "collision_penalty",
+    "step_penalty",
 )
 
 
@@ -34,7 +39,9 @@ def discover_metric_files(root: str | Path = "experiment_output") -> dict[str, l
     root = Path(root)
     groups = {}
     protocols = (
+        "active_slam_milestone99_full_",
         "active_slam_bounded_pose_full_",
+        "active_slam_milestone99_pilot_",
         "active_slam_bounded_pose_pilot_",
         "active_slam_faithful_full_",
         "active_slam_faithful_pilot_",
@@ -207,7 +214,14 @@ def _draw_frame(axis, frame: dict, history, ground_truth: bool):
             color=colors[index], scale=14, width=0.008,
         )
     metrics = frame["metrics"]
-    axis.set(xlabel="x cell", ylabel="y cell")
+    height, width = image.shape
+    axis.set(
+        xlabel="x cell",
+        ylabel="y cell",
+        xlim=(-0.5, width - 0.5),
+        ylim=(-0.5, height - 0.5),
+    )
+    axis.set_aspect("equal", adjustable="box")
     axis.text(
         0.02, 0.02,
         f"coverage={metrics['coverage']:.2f}\nIoU={metrics['occupancy_iou']:.2f}\nRMSE={metrics['pose_rmse']:.2f}",
@@ -230,3 +244,54 @@ def animate_rollout(frames: list[dict], interval: int = 250):
         figure.tight_layout()
 
     return animation.FuncAnimation(figure, update, frames=len(frames), interval=interval)
+
+
+def animate_rollout_comparison(
+    rollouts: dict[str, list[dict]], interval: int = 250, frame_stride: int = 1
+):
+    """Synchronize true-path and belief animations for multiple policies."""
+    if not rollouts or any(not frames for frames in rollouts.values()):
+        raise ValueError("comparison requires at least one non-empty rollout")
+    if frame_stride < 1:
+        raise ValueError("frame_stride must be at least one")
+
+    columns = len(rollouts)
+    figure, axes = plt.subplots(
+        2, columns, figsize=(4.5 * columns, 8), squeeze=False
+    )
+    figure.subplots_adjust(
+        left=0.04, right=0.99, bottom=0.07, top=0.90, wspace=0.30, hspace=0.35
+    )
+    figure_title = figure.suptitle("Same-map policy comparison | synchronized step 0")
+    frame_count = max(len(frames) for frames in rollouts.values())
+    frame_indices = list(range(0, frame_count, frame_stride))
+    if frame_indices[-1] != frame_count - 1:
+        frame_indices.append(frame_count - 1)
+
+    def update(frame_number):
+        index = frame_indices[frame_number]
+        for column, (method, frames) in enumerate(rollouts.items()):
+            frame_index = min(index, len(frames) - 1)
+            history = frames[: frame_index + 1]
+            for axis in axes[:, column]:
+                axis.clear()
+            _draw_frame(
+                axes[0, column], frames[frame_index], history, ground_truth=True
+            )
+            _draw_frame(
+                axes[1, column], frames[frame_index], history, ground_truth=False
+            )
+            status = (
+                f"finished at step {frame_index}"
+                if index >= len(frames)
+                else f"step {frame_index}"
+            )
+            axes[0, column].set_title(f"{method}: true path\n{status}")
+            axes[1, column].set_title(f"{method}: SLAM belief")
+        figure_title.set_text(
+            f"Same-map policy comparison | synchronized step {index}"
+        )
+
+    return animation.FuncAnimation(
+        figure, update, frames=len(frame_indices), interval=interval
+    )

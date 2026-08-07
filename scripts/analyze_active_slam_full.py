@@ -13,10 +13,24 @@ import numpy as np
 from scipy.stats import t as student_t
 import yaml
 
+try:
+    from .active_slam_analysis_support import (
+        calculate_milestone_timing,
+        print_milestone_summary,
+    )
+    from .active_slam_protocol import expected_config
+except ImportError:
+    from active_slam_analysis_support import (
+        calculate_milestone_timing,
+        print_milestone_summary,
+    )
+    from active_slam_protocol import expected_config
+
 
 FRAMEWORKS = ("eqmarl_psi+", "qfctde", "fctde", "sctde")
 DEFAULT_SEEDS = (3, 4, 5, 6, 7)
 BOUNDED_POSE_DEFAULT_SEEDS = (8, 9, 10, 11, 12)
+MILESTONE99_DEFAULT_SEEDS = (16000, 17000, 18000, 19000, 20000)
 EXPECTED_EPISODES = 1000
 WINDOWS = {
     "pilot_end": (300, 400),
@@ -39,6 +53,19 @@ REQUIRED_METRICS = (
     "pose_rmse",
 )
 REPORT_METRICS = ("team_reward",) + REQUIRED_METRICS
+MILESTONE_REWARD_METRICS = (
+    "coverage_reward",
+    "uncertainty_reward",
+    "milestone_reward",
+    "collision_penalty",
+    "step_penalty",
+)
+MILESTONE_STEP_METRICS = (
+    "steps_to_coverage_90",
+    "steps_to_coverage_95",
+    "steps_to_coverage_98",
+    "steps_to_coverage_99",
+)
 
 
 class ProtocolError(ValueError):
@@ -61,7 +88,7 @@ def _get(config: dict, dotted_path: str):
 
 
 def _protocol_prefix(protocol: str) -> str:
-    if protocol not in {"faithful", "bounded_pose"}:
+    if protocol not in {"faithful", "bounded_pose", "milestone99"}:
         raise ProtocolError(f"unsupported protocol: {protocol}")
     return f"active_slam_{protocol}_full"
 
@@ -69,79 +96,7 @@ def _protocol_prefix(protocol: str) -> str:
 def _expected_config(
     framework: str, seed: int, protocol: str = "faithful"
 ) -> dict[str, object]:
-    critic_name = "eqmarl" if framework == "eqmarl_psi+" else framework
-    prefix = _protocol_prefix(protocol)
-    expected = {
-        "experiment.roots.root_dir": (
-            f"experiment_output/{prefix}_{framework}"
-        ),
-        "experiment.train.n_episodes": EXPECTED_EPISODES,
-        "experiment.train.max_steps_per_episode": 250,
-        "experiment.algorithm.init_func": "eqmarl.algorithms.MAA2C",
-        "experiment.algorithm.init_params.gamma": 0.99,
-        "experiment.algorithm.init_params.alpha": 0.01,
-        "experiment.algorithm.init_params.alpha_final": 0.001,
-        "experiment.algorithm.init_params.alpha_decay_episodes": 500,
-        "experiment.algorithm.init_params.seed": seed,
-        "experiment.algorithm.init_params.reward_aggregation": "mean",
-        "experiment.algorithm.init_params.normalize_advantages": True,
-        "experiment.algorithm.init_params.gradient_clip_norm": 1.0,
-        "experiment.algorithm.init_params.episode_metrics_callback": (
-            "eqmarl.environments.active_slam.episode_metrics_callback"
-        ),
-        "experiment.algorithm.init_params.env.func": (
-            "eqmarl.environments.active_slam.active_slam_make"
-        ),
-        "experiment.algorithm.init_params.env.params.map_size": 24,
-        "experiment.algorithm.init_params.env.params.n_agents": 2,
-        "experiment.algorithm.init_params.env.params.n_beams": 36,
-        "experiment.algorithm.init_params.env.params.patch_size": 7,
-        "experiment.algorithm.init_params.env.params.time_limit": 250,
-        "experiment.algorithm.init_params.env.params.seed": seed,
-        "experiment.algorithm.init_params.model_actor.init_func": (
-            "eqmarl.active_slam_models.generate_actor_classical"
-        ),
-        "experiment.algorithm.init_params.model_actor.init_params.observation_dim": 147,
-        "experiment.algorithm.init_params.model_actor.init_params.n_actions": 3,
-        "experiment.algorithm.init_params.model_actor.init_params.units": [100],
-        "experiment.algorithm.init_params.model_actor.build_shape": [None, 147],
-        "experiment.algorithm.init_params.optimizer_actor.params.learning_rate": 0.0001,
-        "experiment.algorithm.init_params.model_critic.init_func": (
-            f"eqmarl.active_slam_models.generate_critic_{critic_name}"
-        ),
-        "experiment.algorithm.init_params.model_critic.init_params.observation_dim": 147,
-        "experiment.algorithm.init_params.model_critic.init_params.n_agents": 2,
-        "experiment.algorithm.init_params.model_critic.init_params.n_actions": 3,
-        "experiment.algorithm.init_params.model_critic.build_shape": [None, 2, 147],
-    }
-    if protocol == "bounded_pose":
-        expected[
-            "experiment.algorithm.init_params.env.params.bounded_slam_pose"
-        ] = True
-    critic = "experiment.algorithm.init_params.model_critic.init_params"
-    optimizer = "experiment.algorithm.init_params.optimizer_critic"
-    if framework in {"eqmarl_psi+", "qfctde"}:
-        expected.update(
-            {
-                f"{critic}.d_qubits": 4,
-                f"{critic}.n_layers": 5,
-                f"{critic}.nn_activation": "linear",
-                f"{critic}.trainable_w_enc": False,
-                optimizer: [
-                    {
-                        "func": "tensorflow.keras.optimizers.Adam",
-                        "params": {"learning_rate": rate},
-                    }
-                    for rate in (0.001, 0.001, 0.01, 0.01)
-                ],
-            }
-        )
-        if framework == "eqmarl_psi+":
-            expected[f"{critic}.input_entanglement_type"] = "psi+"
-    else:
-        expected[f"{critic}.units"] = [100]
-        expected[f"{optimizer}.params.learning_rate"] = 0.0001
-    return expected
+    return expected_config(framework, seed, protocol, _protocol_prefix(protocol))
 
 
 def _validate_config(
@@ -211,7 +166,11 @@ def _load_run(
     if not np.isfinite(reward).all():
         raise ProtocolError(f"{metrics_paths[0]}: reward contains NaN or infinity")
     metrics = payload.get("metrics", {})
-    missing = sorted(set(REQUIRED_METRICS) - set(metrics))
+    required_metrics = set(REQUIRED_METRICS)
+    if protocol == "milestone99":
+        required_metrics.update(MILESTONE_REWARD_METRICS)
+        required_metrics.update(MILESTONE_STEP_METRICS)
+    missing = sorted(required_metrics - set(metrics))
     if missing:
         raise ProtocolError(f"{metrics_paths[0]}: missing metrics {missing}")
 
@@ -250,6 +209,18 @@ def load_faithful_full_runs(
         seed < 0 for seed in expected_seeds
     ):
         raise ProtocolError(f"seeds must be unique non-negative integers: {expected_seeds}")
+    if protocol == "milestone99":
+        ordered = sorted(expected_seeds)
+        overlapping = [
+            (left, right)
+            for left, right in zip(ordered, ordered[1:])
+            if right - left < EXPECTED_EPISODES
+        ]
+        if overlapping:
+            raise ProtocolError(
+                f"milestone99 seed map ranges overlap: {overlapping}; "
+                f"seeds must be at least {EXPECTED_EPISODES} apart"
+            )
 
     runs = {}
     for framework in FRAMEWORKS:
@@ -310,6 +281,9 @@ def analyze_active_slam_full(
     """Audit full runs and calculate paired window and framework statistics."""
     seeds = tuple(int(seed) for seed in seeds)
     runs = load_faithful_full_runs(root, seeds, protocol)
+    report_metrics = REPORT_METRICS
+    if protocol == "milestone99":
+        report_metrics += MILESTONE_REWARD_METRICS
     per_window = {}
     for window, (start, stop) in WINDOWS.items():
         per_window[window] = {
@@ -320,7 +294,7 @@ def analyze_active_slam_full(
                         for seed in seeds
                     }
                 )
-                for metric in REPORT_METRICS
+                for metric in report_metrics
             }
             for framework in FRAMEWORKS
         }
@@ -336,7 +310,7 @@ def analyze_active_slam_full(
                     for seed in seeds
                 }
             )
-            for metric in REPORT_METRICS
+            for metric in report_metrics
         }
         for framework in FRAMEWORKS
     }
@@ -350,8 +324,20 @@ def analyze_active_slam_full(
                 for seed in seeds
             }
         )
-        for metric in REPORT_METRICS
+        for metric in report_metrics
     }
+    milestone_timing = None
+    if protocol == "milestone99":
+        start, stop = WINDOWS["final"]
+        milestone_timing = calculate_milestone_timing(
+            runs,
+            FRAMEWORKS,
+            seeds,
+            MILESTONE_STEP_METRICS,
+            start,
+            stop,
+            _estimate,
+        )
     return {
         "protocol": _protocol_prefix(protocol),
         "episodes": EXPECTED_EPISODES,
@@ -361,6 +347,7 @@ def analyze_active_slam_full(
         "window_summary": per_window,
         "stability_final_minus_pilot_end": stability,
         "final_eqmarl_minus_qfctde": eqmarl_minus_qfctde,
+        "final_milestone_timing": milestone_timing,
     }
 
 
@@ -420,23 +407,35 @@ def print_summary(report: dict) -> None:
     ):
         print(f"{metric}\t{_format_estimate(comparison[metric], scale)}")
 
+    if report["protocol"] == "active_slam_milestone99_full":
+        print_milestone_summary(
+            report,
+            FRAMEWORKS,
+            MILESTONE_REWARD_METRICS,
+            MILESTONE_STEP_METRICS,
+            _format_estimate,
+        )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path("experiment_output"))
     parser.add_argument(
-        "--protocol", choices=("faithful", "bounded_pose"), default="faithful"
+        "--protocol",
+        choices=("faithful", "bounded_pose", "milestone99"),
+        default="faithful",
     )
     parser.add_argument("--seeds", type=int, nargs="+")
     parser.add_argument("--output", type=Path, help="Optional JSON report path")
     args = parser.parse_args()
     seeds = args.seeds
     if seeds is None:
-        seeds = (
-            BOUNDED_POSE_DEFAULT_SEEDS
-            if args.protocol == "bounded_pose"
-            else DEFAULT_SEEDS
-        )
+        default_seeds = {
+            "faithful": DEFAULT_SEEDS,
+            "bounded_pose": BOUNDED_POSE_DEFAULT_SEEDS,
+            "milestone99": MILESTONE99_DEFAULT_SEEDS,
+        }
+        seeds = default_seeds[args.protocol]
     try:
         report = analyze_active_slam_full(args.root, seeds, args.protocol)
     except ProtocolError as error:

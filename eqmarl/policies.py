@@ -92,13 +92,25 @@ class FrontierJointPolicy:
 
 
 class LearnedJointPolicy:
-    """Greedy decentralized policy backed by a trained shared actor."""
+    """Decentralized policy backed by a trained shared actor."""
 
-    def __init__(self, model):
+    def __init__(self, model, mode: str = "greedy", seed: int = 0):
+        if mode not in ("greedy", "sample"):
+            raise ValueError("mode must be 'greedy' or 'sample'")
         self.model = model
+        self.mode = mode
+        self.rng = np.random.default_rng(seed)
 
     def action(self, env: MultiAgentSLAMEnv, observation=None) -> list[int]:
         if observation is None:
             raise ValueError("learned policy requires the current observation")
-        probabilities = self.model(observation["local"], training=False)
-        return np.argmax(np.asarray(probabilities), axis=-1).astype(int).tolist()
+        probabilities = np.asarray(
+            self.model(observation["local"], training=False), dtype=np.float64
+        )
+        if self.mode == "greedy":
+            return np.argmax(probabilities, axis=-1).astype(int).tolist()
+        probabilities /= probabilities.sum(axis=-1, keepdims=True)
+        return [
+            int(self.rng.choice(len(agent_probabilities), p=agent_probabilities))
+            for agent_probabilities in probabilities
+        ]

@@ -29,6 +29,17 @@ REQUIRED_SERIES = (
     "occupancy_iou",
     "pose_rmse",
 )
+MILESTONE_SERIES = (
+    "coverage_reward",
+    "uncertainty_reward",
+    "milestone_reward",
+    "collision_penalty",
+    "step_penalty",
+    "steps_to_coverage_90",
+    "steps_to_coverage_95",
+    "steps_to_coverage_98",
+    "steps_to_coverage_99",
+)
 
 
 def _config(framework, seed, protocol="faithful"):
@@ -139,13 +150,23 @@ def _write_run(
     session = root / f"active_slam_{protocol}_full_{framework}" / f"run-seed{seed}"
     session.mkdir(parents=True)
     config = _config(framework, seed, protocol)
-    if protocol == "bounded_pose":
+    if protocol in {"bounded_pose", "milestone99"}:
         env_params = config["experiment"]["algorithm"]["init_params"]["env"]["params"]
         env_params["bounded_slam_pose"] = True
+    if protocol == "milestone99":
+        env_params["coverage_target"] = 0.99
+        env_params["coverage_milestones"] = {
+            0.90: 0.5,
+            0.95: 1.0,
+            0.98: 2.0,
+            0.99: 5.0,
+        }
     (session / "config.yml").write_text(yaml.safe_dump(config))
     offset = FRAMEWORKS.index(framework) * 0.1 + seed * 0.01
     values = [offset + episode * 0.001 for episode in range(episodes)]
     metrics = {name: values for name in REQUIRED_SERIES}
+    if protocol == "milestone99":
+        metrics.update({name: values for name in MILESTONE_SERIES})
     payload = {
         "reward": [[value, value] for value in values],
         "metrics": metrics,
@@ -179,6 +200,27 @@ def test_audit_accepts_isolated_bounded_pose_protocol(tmp_path):
 
     assert report["protocol"] == "active_slam_bounded_pose_full"
     assert report["seeds"] == [8]
+
+
+def test_audit_accepts_isolated_milestone99_protocol(tmp_path):
+    for framework in FRAMEWORKS:
+        _write_run(tmp_path, framework, 16000, protocol="milestone99")
+
+    report = analyze_faithful_full(
+        tmp_path, seeds=(16000,), protocol="milestone99"
+    )
+
+    assert report["protocol"] == "active_slam_milestone99_full"
+    assert "milestone_reward" in report["window_summary"]["final"]["eqmarl_psi+"]
+    timing = report["final_milestone_timing"]["eqmarl_psi+"]
+    assert timing["steps_to_coverage_99"]["reach_rate"]["mean"] == 1.0
+
+
+def test_milestone99_audit_rejects_overlapping_map_seed_ranges(tmp_path):
+    with pytest.raises(ProtocolError, match="seed map ranges overlap"):
+        load_faithful_full_runs(
+            tmp_path, seeds=(16000, 16001), protocol="milestone99"
+        )
 
 
 def test_audit_rejects_partial_checkpoint(tmp_path):

@@ -7,6 +7,8 @@ odometry and lidar scans to maintain pose and occupancy beliefs.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import gymnasium as gym
 import numpy as np
 
@@ -44,6 +46,7 @@ class MultiAgentSLAMEnv(gym.Env):
         odometry_translation_noise: float = 0.04,
         odometry_rotation_noise: float = 0.015,
         bounded_slam_pose: bool = False,
+        coverage_milestones: Mapping[float, float] | None = None,
         seed: int = 0,
     ):
         super().__init__()
@@ -63,6 +66,9 @@ class MultiAgentSLAMEnv(gym.Env):
         self.odometry_translation_noise = float(odometry_translation_noise)
         self.odometry_rotation_noise = float(odometry_rotation_noise)
         self.bounded_slam_pose = bool(bounded_slam_pose)
+        self.coverage_milestones = self._validate_coverage_milestones(
+            coverage_milestones
+        )
         self.initial_seed = int(seed)
         self.beam_angles = np.linspace(-np.pi, np.pi, self.n_beams, endpoint=False).astype(
             np.float32
@@ -98,7 +104,55 @@ class MultiAgentSLAMEnv(gym.Env):
         self.collision_count = 0
         self.path_length = 0.0
         self.new_observed_cells = 0
+        self.reward_component_totals = {}
+        self.milestone_first_steps = {}
         self.last_metrics = {}
+
+    def _validate_coverage_milestones(
+        self, milestones: Mapping[float, float] | None
+    ) -> tuple[tuple[float, float], ...]:
+        if milestones is None:
+            return ()
+        if not isinstance(milestones, Mapping):
+            raise TypeError("coverage_milestones must be a threshold-to-bonus mapping")
+        resolved = []
+        for threshold, bonus in milestones.items():
+            threshold = float(threshold)
+            bonus = float(bonus)
+            if not np.isfinite(threshold) or not 0.0 < threshold <= self.coverage_target:
+                raise ValueError(
+                    "coverage milestone thresholds must be finite, positive, and "
+                    "no greater than coverage_target"
+                )
+            if not np.isfinite(bonus) or bonus < 0.0:
+                raise ValueError("coverage milestone bonuses must be finite and non-negative")
+            resolved.append((threshold, bonus))
+        return tuple(sorted(resolved))
+
+    def _milestone_reward(self, previous_coverage: float, coverage: float) -> float:
+        return float(
+            sum(
+                bonus
+                for threshold, bonus in self.coverage_milestones
+                if previous_coverage < threshold <= coverage
+            )
+        )
+
+    @staticmethod
+    def _milestone_metric_name(threshold: float) -> str:
+        return f"steps_to_coverage_{int(round(100.0 * threshold))}"
+
+    def _reset_reward_diagnostics(self) -> None:
+        self.reward_component_totals = {
+            "coverage_reward": 0.0,
+            "uncertainty_reward": 0.0,
+            "milestone_reward": 0.0,
+            "collision_penalty": 0.0,
+            "step_penalty": 0.0,
+        }
+        self.milestone_first_steps = {
+            threshold: None for threshold, _ in self.coverage_milestones
+        }
 
     def _generate_map(self) -> tuple[np.ndarray, np.ndarray]:
         grid = np.zeros((self.map_size, self.map_size), dtype=bool)
@@ -248,6 +302,7 @@ class MultiAgentSLAMEnv(gym.Env):
         self.collision_count = 0
         self.path_length = 0.0
         self.new_observed_cells = 0
+        self._reset_reward_diagnostics()
         for index, backend in enumerate(self.backends):
             initial = self.true_poses[index].copy()
             initial[:2] += self.rng.normal(0.0, 0.05, 2)
@@ -278,17 +333,37 @@ class MultiAgentSLAMEnv(gym.Env):
         uncertainty_reduction = float(np.clip(previous_logdet - self._total_logdet(), -1.0, 1.0))
         if not newly_observed:
             uncertainty_reduction = min(0.0, uncertainty_reduction)
+        reward_components = {
+            "coverage_reward": 10.0 * (coverage - previous_coverage),
+            "uncertainty_reward": 0.5 * uncertainty_reduction,
+            "milestone_reward": self._milestone_reward(previous_coverage, coverage),
+            "collision_penalty": 0.1 * collisions,
+            "step_penalty": 0.01,
+        }
+        for name, value in reward_components.items():
+            self.reward_component_totals[name] += float(value)
+        for threshold in self.milestone_first_steps:
+            if (
+                self.milestone_first_steps[threshold] is None
+                and previous_coverage < threshold <= coverage
+            ):
+                self.milestone_first_steps[threshold] = self.step_count
         team_reward = (
-            10.0 * (coverage - previous_coverage)
-            + 0.5 * uncertainty_reduction
-            - 0.1 * collisions
-            - 0.01
+            reward_components["coverage_reward"]
+            + reward_components["uncertainty_reward"]
+            + reward_components["milestone_reward"]
+            - reward_components["collision_penalty"]
+            - reward_components["step_penalty"]
         )
         rewards = np.full(self.n_agents, team_reward, dtype=np.float32)
         terminated = bool(coverage >= self.coverage_target)
         truncated = bool(self.step_count >= self.time_limit)
         self.last_metrics = self.episode_metrics()
-        info = {**self.last_metrics, "team_reward": team_reward}
+        info = {
+            **self.last_metrics,
+            "team_reward": team_reward,
+            "step_reward_components": reward_components,
+        }
         return self._observation(), rewards, terminated, truncated, info
 
     def episode_metrics(self) -> dict[str, float]:
@@ -307,7 +382,7 @@ class MultiAgentSLAMEnv(gym.Env):
         ]
         total_observed = sum(np.count_nonzero(belief.observed) for belief in beliefs)
         union_observed = max(1, np.count_nonzero(observed))
-        return {
+        metrics = {
             "coverage": self._coverage(),
             "occupancy_iou": occupancy_iou,
             "pose_rmse": float(np.sqrt(np.mean(np.square(position_errors)))),
@@ -317,7 +392,17 @@ class MultiAgentSLAMEnv(gym.Env):
             "redundant_coverage": float(max(0.0, total_observed / union_observed - 1.0)),
             "pose_uncertainty": float(sum(np.trace(belief.covariance) for belief in beliefs)),
             "success": float(self._coverage() >= self.coverage_target),
+            **self.reward_component_totals,
         }
+        metrics.update(
+            {
+                self._milestone_metric_name(threshold): float(
+                    -1 if step is None else step
+                )
+                for threshold, step in self.milestone_first_steps.items()
+            }
+        )
+        return metrics
 
     def render(self):
         canvas = np.where(self.ground_truth, "#", " ").astype("<U1")

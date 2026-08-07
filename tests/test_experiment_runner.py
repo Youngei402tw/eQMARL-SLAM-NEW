@@ -1,5 +1,6 @@
 import copy
 import os
+import subprocess
 import pytest
 from pathlib import Path
 
@@ -86,6 +87,14 @@ def test_output_protocol_rewrites_all_active_slam_paths():
     apply_output_protocol(bounded, "pilot")
     assert "bounded_pose_pilot" in bounded["experiment"]["roots"]["root_dir"]
     assert "bounded_pose_pilot" in bounded["experiment"]["save"]["metrics_file"]
+
+    milestone = {"experiment": {
+        "roots": {"root_dir": "experiment_output/active_slam_milestone99_full_fctde"},
+        "save": {"metrics_file": "active_slam_milestone99_full_fctde/metrics.json"},
+    }}
+    apply_output_protocol(milestone, "pilot")
+    assert "milestone99_pilot" in milestone["experiment"]["roots"]["root_dir"]
+    assert "milestone99_pilot" in milestone["experiment"]["save"]["metrics_file"]
 
 
 def test_fast_preset_reduces_active_slam_dimensions_and_budget():
@@ -195,3 +204,70 @@ def test_bounded_pose_configs_change_only_output_paths_and_pose_constraint():
         env_params = expected["experiment"]["algorithm"]["init_params"]["env"]["params"]
         env_params["bounded_slam_pose"] = True
         assert bounded == expected
+
+
+def test_milestone99_configs_change_only_protocol_reward_and_output_paths():
+    experiment_dir = Path(__file__).parents[1] / "experiments"
+    frameworks = ("eqmarl_psi+", "qfctde", "fctde", "sctde")
+
+    def replace_output_namespace(value):
+        if isinstance(value, dict):
+            return {key: replace_output_namespace(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [replace_output_namespace(item) for item in value]
+        if isinstance(value, str):
+            return value.replace(
+                "active_slam_bounded_pose_full_", "active_slam_milestone99_full_"
+            )
+        return value
+
+    for framework in frameworks:
+        bounded_path = experiment_dir / f"active_slam_bounded_pose_{framework}.yml"
+        milestone_path = experiment_dir / f"active_slam_milestone99_{framework}.yml"
+        bounded = yaml.load(bounded_path.read_text(), Loader=eqmarl.yaml.ConfigLoader)
+        milestone = yaml.load(
+            milestone_path.read_text(), Loader=eqmarl.yaml.ConfigLoader
+        )
+        expected = replace_output_namespace(copy.deepcopy(bounded))
+        env_params = expected["experiment"]["algorithm"]["init_params"]["env"]["params"]
+        env_params["coverage_target"] = 0.99
+        env_params["coverage_milestones"] = {
+            0.90: 0.5,
+            0.95: 1.0,
+            0.98: 2.0,
+            0.99: 5.0,
+        }
+        assert milestone == expected
+
+
+def test_milestone99_submission_uses_disjoint_seed_blocks_and_hold_monitor():
+    repo_root = Path(__file__).parents[1]
+    submit_source = (
+        repo_root / "scripts" / "submit_vanda_milestone99.sh"
+    ).read_text()
+    pbs_source = (repo_root / "train_vanda_milestone99.pbs").read_text()
+
+    assert "13000 14000 15000" in submit_source
+    assert "16000 17000 18000 19000 20000" in submit_source
+    assert "Seed ranges overlap" in submit_source
+    assert "qrls -h u" in submit_source
+    assert "train_vanda_milestone99.pbs" in submit_source
+    assert "active_slam_milestone99_${SLAM_FRAMEWORK}.yml" in pbs_source
+    assert "--max-steps-per-episode \"$SLAM_MAX_STEPS\"" in pbs_source
+
+    environment = os.environ.copy()
+    environment.update(
+        SLAM_MILESTONE99_FULL_SEEDS="1 2",
+        SLAM_N_EPISODES="1000",
+        SLAM_MONITOR_HELD="0",
+    )
+    result = subprocess.run(
+        ["bash", str(repo_root / "scripts" / "submit_vanda_milestone99.sh"), "full"],
+        cwd=repo_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "Seed ranges overlap" in result.stderr

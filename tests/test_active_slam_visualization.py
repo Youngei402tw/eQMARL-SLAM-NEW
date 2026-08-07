@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from eqmarl.active_slam_visualization import (
+    animate_rollout_comparison,
     discover_metric_files,
     load_metrics,
     plot_learning_curves,
@@ -15,7 +16,7 @@ from eqmarl.active_slam_visualization import (
     summarize_final_metrics,
 )
 from eqmarl.environments.active_slam import MultiAgentSLAMEnv
-from eqmarl.policies import FrontierJointPolicy
+from eqmarl.policies import FrontierJointPolicy, LearnedJointPolicy
 
 
 def test_notebook_learned_rollout_uses_bounded_slam_pose():
@@ -24,11 +25,33 @@ def test_notebook_learned_rollout_uses_bounded_slam_pose():
     source = "\n".join(
         "".join(cell.get("source", [])) for cell in notebook["cells"]
     )
-    assert "LearnedJointPolicy(actor)" in source
-    assert "MultiAgentSLAMEnv(map_size=24, time_limit=250, bounded_slam_pose=True)" in source
+    assert "LearnedJointPolicy(actor, mode='sample', seed=rollout_seed)" in source
+    assert "active_slam_milestone99_full_" in source
+    assert "training_seed = audit_seeds[0]" in source
+    assert "coverage_target = 0.99" in source
+    assert "rollout_step_limit = 250" in source
+    assert "importlib.reload(active_slam_visualization)" in source
+    assert "animate_rollout_comparison(" in source
+    assert "rollouts_by_method, interval=180, frame_stride=3" in source
+    assert "time_limit=rollout_step_limit" in source
+    assert "coverage_milestones=coverage_milestones" in source
     assert "analyze_active_slam_full" in source
-    assert "protocol='bounded_pose'" in source
-    assert "seeds=(8, 9, 10, 11, 12)" in source
+    assert "'milestone99': (16000, 17000, 18000, 19000, 20000)" in source
+
+
+def test_learned_policy_can_reproduce_sampled_training_actions():
+    class ConstantActor:
+        def __call__(self, observations, training=False):
+            return np.tile([0.45, 0.45, 0.10], (len(observations), 1))
+
+    observation = {"local": np.zeros((2, 147), dtype=np.float32)}
+    first = LearnedJointPolicy(ConstantActor(), mode="sample", seed=7)
+    second = LearnedJointPolicy(ConstantActor(), mode="sample", seed=7)
+    first_actions = [first.action(None, observation) for _ in range(10)]
+    second_actions = [second.action(None, observation) for _ in range(10)]
+
+    assert first_actions == second_actions
+    assert any(actions != [0, 0] for actions in first_actions)
 
 
 def test_metric_loading_summary_and_plots(tmp_path):
@@ -97,6 +120,17 @@ def test_bounded_pose_metrics_take_precedence_after_reevaluation(tmp_path):
     assert load_metrics(groups)["team_reward"].tolist() == [2.0]
 
 
+def test_milestone99_metrics_take_precedence_after_retraining(tmp_path):
+    for protocol, reward in (("bounded_pose_full", 1.0), ("milestone99_full", 2.0)):
+        output = tmp_path / f"active_slam_{protocol}_fctde" / "run"
+        output.mkdir(parents=True)
+        (output / "metrics-0.json").write_text(json.dumps({
+            "reward": [[reward, reward]], "metrics": {"coverage": [0.5]}
+        }))
+    groups = discover_metric_files(tmp_path)
+    assert load_metrics(groups)["team_reward"].tolist() == [2.0]
+
+
 def test_frontier_rollout_can_be_rendered():
     env = MultiAgentSLAMEnv(map_size=16, time_limit=3)
     frames = rollout(env, FrontierJointPolicy(), seed=2)
@@ -120,3 +154,27 @@ def test_belief_panel_uses_black_for_occupied_cells():
     assert image[1, 1] < 0.01
     assert image[1, 2] > 0.99
     plt.close(figure)
+
+
+def test_comparison_animation_synchronizes_multiple_rollouts():
+    short_env = MultiAgentSLAMEnv(map_size=16, time_limit=1)
+    long_env = MultiAgentSLAMEnv(map_size=16, time_limit=2)
+    rollouts = {
+        "short": rollout(short_env, FrontierJointPolicy(), seed=5),
+        "long": rollout(long_env, FrontierJointPolicy(), seed=5),
+    }
+
+    comparison = animate_rollout_comparison(rollouts, interval=10, frame_stride=2)
+    comparison._func(0)
+    initial_positions = [axis.get_position().bounds for axis in comparison._fig.axes]
+    comparison._func(1)
+
+    assert len(comparison._fig.axes) == 4
+    assert "finished at step 1" in comparison._fig.axes[0].get_title()
+    assert all(
+        np.allclose(initial, axis.get_position().bounds)
+        for initial, axis in zip(initial_positions, comparison._fig.axes)
+    )
+    assert comparison._fig.axes[0].get_xlim() == (-0.5, 15.5)
+    assert comparison._fig.axes[0].get_ylim() == (-0.5, 15.5)
+    plt.close(comparison._fig)

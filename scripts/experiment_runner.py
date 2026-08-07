@@ -182,7 +182,11 @@ def apply_output_protocol(config: dict, protocol: str):
     """Isolate fast, pilot, and full outputs without duplicating configurations."""
     if protocol not in {'fast', 'pilot', 'full'}:
         raise ValueError(f"unsupported active-SLAM output protocol: {protocol}")
-    namespaces = ('active_slam_faithful_', 'active_slam_bounded_pose_')
+    namespaces = (
+        'active_slam_faithful_',
+        'active_slam_bounded_pose_',
+        'active_slam_milestone99_',
+    )
 
     def replace(value):
         if isinstance(value, dict):
